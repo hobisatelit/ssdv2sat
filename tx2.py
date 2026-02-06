@@ -214,6 +214,8 @@ def main():
     time.sleep(2)
     print()
 
+	send_number = 0
+
     if args.sms:
         sms = args.sms
         smshex = sms.encode('utf-8').hex()
@@ -221,8 +223,8 @@ def main():
         frame = dest_sms + src_addr + b'\x03\xf0' + payload
         kiss_sms = FEND + b'\x00' + kiss_escape(frame) + FEND
         send_number = 1
-    
-    print(f"Sending {len(sms)} bytes SMS to Dire Wolf...\n")     
+		print(f"Sending {len(sms)} bytes SMS to Dire Wolf...\n")
+		
     print(f"Sending {total_bytes} bytes to Dire Wolf in ~{total_frames} frames...\n")
 
     while offset < total_bytes:
