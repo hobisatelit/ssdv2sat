@@ -213,8 +213,8 @@ def main():
     start = time.perf_counter()
     time.sleep(2)
     print()
-
-	send_number = 0
+	
+    send_number = 0
 
     if args.sms:
         sms = args.sms
