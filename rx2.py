@@ -144,7 +144,7 @@ def main(args):
     print(f"Expecting 16-byte AX25 (APRS/IL2P) for ID + min {MIN_PACKET_LENGTH - 16}-byte for SSDV")
 
     # (callsign, image_id) → {packet_id: image_data (186 bytes)}
-    formatted_time = time.strftime("%Y-%m-%dT%H:%M:%S")
+    formatted_time = time.strftime("%Y-%m-%dT%H-%M-%S")
     images = defaultdict(dict)
     images_inv = defaultdict(dict)
     parsed = defaultdict(dict)
