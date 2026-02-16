@@ -170,7 +170,7 @@ def main():
     basename = os.path.basename(filename)
     basename_noext = os.path.splitext(basename)[0]
     
-    IMG_ID = crc32(basename)
+    IMG_ID = crc32(filename)
     
     if args.fec:
         FEC_SUFFIX = "_FEC"
