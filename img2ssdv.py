@@ -2,10 +2,10 @@
 # Copyright 2026 hobisatelit
 # https://github.com/hobisatelit/ssdv2sat
 # License: GPL-3.0-or-later
-VERSION = '0.02'
-
+VERSION = '0.04'
 """
-Convert image to SSDV-compatible JPEG.
+Convert the image to a SSDV-compatible JPEG. By default, FEC (Reed-Solomon) is disabled.
+This is because we have configured direwolf.conf with IL2P, which enhances AX.25 using FEC
 
 Features:
 - Resize proportionally to fit within max_width × max_height
@@ -18,8 +18,8 @@ Features:
 - Optimize file size (huffman tables)
 
 Usage:
-    python ssdv_jpeg.py input.png output.jpg
-    python ssdv_jpeg.py photo.jpg ssdv.jpg --max-size 640 480 --quality 35
+    python img2ssdv.py input.jpg
+    python img2ssdv.py input.jpg --max-size 640 480 --callsign ABCDEF --text "Hello World" --quality 30 --suffix hobi --nofec
 """
 import os
 import argparse
@@ -88,11 +88,14 @@ def text_topleft(im, text):
 
     return im
 
-def ssdv_encoding(packet_length,input_filename,output_filename,callsign,quality):
+def ssdv_encoding(packet_length,input_filename,output_filename,callsign,quality,imgid,fec):
   try:
-    #auto adjust ssdv quality 	  
-    q = min(7, max(0, round((quality - 10) / 12)))  
-    command = [DEFAULT_APP_SSDV, "-e", "-n", "-q", str(q), "-l", str(packet_length), "-c", str(callsign), input_filename, output_filename]
+    #auto adjust ssdv quality     
+    q = min(7, max(0, round((quality - 10) / 12)))
+    if fec:  
+        command = [DEFAULT_APP_SSDV, "-e", "-q", str(q), "-l", str(packet_length), "-c", str(callsign), "-i", str(imgid), input_filename, output_filename]
+    else:
+        command = [DEFAULT_APP_SSDV, "-e", "-n", "-q", str(q), "-l", str(packet_length), "-c", str(callsign), "-i", str(imgid), input_filename, output_filename] 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = process.communicate()
     return stderr.decode().strip()
@@ -106,8 +109,9 @@ def ssdv_encoding(packet_length,input_filename,output_filename,callsign,quality)
 def main():
     parser = argparse.ArgumentParser(
          description="Convert image to SSDV-compatible JPEG",
-         epilog="Example: ./img2ssdv.py image.jpg"
+         epilog="Example: ./img2ssdv.py input.jpg"
     )
+          
     parser.add_argument("input", help="Input image filename (JPG, PNG, etc.)")
     parser.add_argument("--max-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=[320, 320],
@@ -117,13 +121,16 @@ def main():
     parser.add_argument("--text", type=str, default=None,
                         help="put small text top-left corner of the image")   
     parser.add_argument("--quality", type=int, default=20,
-                        help="JPEG quality 1–95 (default: 20 – good for SSDV)")                  
+                        help="JPEG quality 1–95 (default: 20 – good for SSDV)")      
+    parser.add_argument("--imgid", type=int, default=0,
+                        help="Image ID 0–255 (default: 0)")            
     parser.add_argument("--length", type=int, default=256,
-                        help="SSDV packet length (default: 256) - between 64-256")
+                        help="SSDV packet length (default: 256) - between 21-256")
     parser.add_argument("--dir", type=str, default=".",
                         help="output directory (default: .)") 
     parser.add_argument("--suffix", type=str, default="",
                         help="filename suffix") 
+    parser.add_argument("--fec", action="store_true", help="Encode SSDV packets with FEC") 
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
     
     args = parser.parse_args()
@@ -134,7 +141,7 @@ def main():
 
     if args.suffix:
        args.suffix = f"_{args.suffix}"
-		
+        
     small_output_filename = f"{basename_noext}_small{args.suffix}.jpg"
     ssdv_output_filename = f"{basename_noext}_ssdv{args.suffix}.bin"
 
@@ -147,8 +154,12 @@ def main():
         print("Error: quality must be between 1 and 95", file=sys.stderr)
         sys.exit(1)
         
-    if not (64 <= args.length <= 256):
-        print("Error: SSDV packet length must be between 64 and 256", file=sys.stderr)
+    if not (0 <= args.imgid <= 255):
+        print("Error: IMG ID must be between 0 and 255", file=sys.stderr)
+        sys.exit(1)
+        
+    if not (21 <= args.length <= 256):
+        print("Error: SSDV packet length must be between 21 and 256", file=sys.stderr)
         sys.exit(1)
 
     os.makedirs(args.dir, exist_ok=True)
@@ -179,11 +190,9 @@ def main():
                 icc_profile=None,        # No color profile
                 # Pillow does not write XMP/IPTC/thumbnail unless explicitly added
             )
-            
-                      
+                                  
             #ssdv auto encode
-            ssdv_process = ssdv_encoding(args.length,os.path.join(args.dir, small_output_filename),os.path.join(args.dir, ssdv_output_filename),args.callsign,args.quality)
-
+            ssdv_process = ssdv_encoding(args.length,os.path.join(args.dir, small_output_filename),os.path.join(args.dir,ssdv_output_filename),args.callsign,args.quality,args.imgid,args.fec)
 
             print(f"\nJPEG Optimization → {small_output_filename}")
             print(f"Resized to   : {im_resized.size[0]}×{im_resized.size[1]} (multiple of 16, aspect preserved)")
@@ -194,6 +203,7 @@ def main():
             print(f"\nSSDV Encoding → {ssdv_output_filename}")
             print(f"PacketLength : {args.length} bytes")
             print(ssdv_process)
+            print(f"FEC (ReedSolomon): {args.fec}")
 
     except FileNotFoundError:
         print(f"Error: Input file not found → {args.input}", file=sys.stderr)
