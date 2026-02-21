@@ -62,6 +62,11 @@ VAR_LENGTH = [128,256]
 KISS_FEND = b'\xC0'
 KISS_DATA_FRAME = 0x00
 
+# ANSI escape codes for colors
+YELLOW = "\033[93m"  # Yellow text
+BLACK_BACKGROUND = "\033[40m"  # Black background
+RESET = "\033[0m"  # Reset to default colors
+
 def replace_na(input_string):
     return re.sub(r'\W+', '_', input_string)
     
@@ -203,9 +208,10 @@ def parse_ssdv_packet_deep(packet,verbose: bool = False):
         parts['width'] *= 8
         parts['height'] *= 16
         parts['mcu_count'] *= 2
+    # seen there is bug in ssdv, before it should be 8, then fix with 16. just try    
     elif parts['mcu_mode'] == 3:
-        parts['width'] *= 8
-        parts['height'] *= 8
+        parts['width'] *= 16
+        parts['height'] *= 16
         parts['mcu_count'] *= 4
     
     parts['fingerprint'] = '-'.join([
@@ -749,11 +755,12 @@ def main(args):
                                     if args.nofilter:
                                         process_nonssdv = True
                                     else:
-                                        if "_" in src_call or file_id:
+                                        if src_call.count('_') + file_id.count('_') <= 1 and cleaned_text:
+                                            process_nonssdv = True
+                                            cleaned_text = f"{YELLOW}{BLACK_BACKGROUND}{cleaned_text}{RESET}"
+                                        else:
                                             process_nonssdv = False
                                             total_filter += 1
-                                        else:
-                                            process_nonssdv = True
                                         
                                     if process_nonssdv:
                                         if not args.onlyssdv:
@@ -780,8 +787,8 @@ def main(args):
                                         if not src_call:
                                             src_call = 'unknown'
                                         
-                                        path_bin = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.bin")
-                                        path_ascii = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.txt")
+                                        path_bin = os.path.join(f"{output_dir}/other", f"{src_call}.bin")
+                                        path_ascii = os.path.join(f"{output_dir}/other", f"{src_call}.txt")
                                         
                                         if args.newline:
                                             nl = '\n'
@@ -839,7 +846,7 @@ if __name__ == "__main__":
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, f"output/{formatted_time_nosecond}")
-    os.makedirs(f"{output_dir}/deep", exist_ok=True)
+    os.makedirs(f"{output_dir}/other", exist_ok=True)
     
     # Open the log file
     log_file = open(f"{output_dir}/log.txt", 'a')
