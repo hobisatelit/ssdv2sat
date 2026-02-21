@@ -85,11 +85,15 @@ cd ~/ssdv2sat
 ./rx.py -h
 ./rx.py -s
 
+recommended:
+./tx.py input.jpg
+
 # set my **callsign MARIO**, then create modulated wav from **image file mario-poster.jpg**,
 # connect to dire wolf kiss server at **ip 192.168.10.1, port 8080**,
 # set **maximum length** per ssdv packet 195 bytes,
 # set **delay** 1 second between packet transmission,
 # save all output into **directory** recording
-./tx.py --host 192.168.10.1 --port 8080 --max 195 --delay 1 --dir recording MARIO example/mario-poster.jpg 
+# send short message (sms) to ISS, with message Hello World
+./tx.py MARIO mario-poster.jpg --host 192.168.10.1 --port 8080 --max 195 --delay 1 --dir recording --sms "Hello world! this is message from space!" --dest ISS
 ```
 
