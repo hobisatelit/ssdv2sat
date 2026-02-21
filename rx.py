@@ -755,7 +755,7 @@ def main(args):
                                     if args.nofilter:
                                         process_nonssdv = True
                                     else:
-                                        if src_call.count('_') + file_id.count('_') <= 1 and cleaned_text:
+                                        if src_call.count('_') + file_id.count('_') <= 1 and cleaned_text and len(src_call) >=3 and len(file_id) >=3:
                                             process_nonssdv = True
                                             cleaned_text = f"{YELLOW}{BLACK_BACKGROUND}{cleaned_text}{RESET}"
                                         else:
