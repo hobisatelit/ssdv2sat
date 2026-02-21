@@ -28,10 +28,21 @@ import subprocess
 from PIL import Image, ImageDraw, ImageFont
 import configparser
 
+DEFAULT_PACKET_LENGTH = 256
+
+DEFAULT_FEC = False
+
+# minimum packet for SSDV without FEC / reed solomon. (in bytes)
+MIN_SSDV_LENGTH = 26
+
+if DEFAULT_FEC:
+    DEFAULT_NOFEC = False
+else:
+    DEFAULT_NOFEC = True 
+
 def make_multiple_of_16(n: int) -> int:
     """Round down to nearest multiple of 16 (SSDV needs 16×16 MCU blocks)."""
     return (n // 16) * 16
-
 
 def resize_to_fit_keep_aspect(
     img: Image.Image,
@@ -124,13 +135,14 @@ def main():
                         help="JPEG quality 1–95 (default: 20 – good for SSDV)")      
     parser.add_argument("--imgid", type=int, default=0,
                         help="Image ID 0–255 (default: 0)")            
-    parser.add_argument("--length", type=int, default=256,
-                        help="SSDV packet length (default: 256) - between 21-256")
+    parser.add_argument("--length", type=int, default=DEFAULT_PACKET_LENGTH,
+                        help=f"SSDV packet length (default: {DEFAULT_PACKET_LENGTH}), between {MIN_SSDV_LENGTH}-256 without fec or {MIN_SSDV_LENGTH + 32}-256 with fec")
     parser.add_argument("--dir", type=str, default=".",
                         help="output directory (default: .)") 
     parser.add_argument("--suffix", type=str, default="",
                         help="filename suffix") 
-    parser.add_argument("--fec", action="store_true", help="Encode SSDV packets with FEC") 
+    parser.add_argument("--fec", action='store_true', default=DEFAULT_FEC, help=f"Encode SSDV packets with FEC (Reed Solomon). Default: {DEFAULT_FEC}") 
+    parser.add_argument("--no-fec", action='store_false',default=DEFAULT_NOFEC, dest='fec', help=f"Encode SSDV packets without FEC (Reed Solomon). Default: {DEFAULT_NOFEC}") 
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
     
     args = parser.parse_args()
@@ -141,6 +153,8 @@ def main():
 
     if args.suffix:
        args.suffix = f"_{args.suffix}"
+       
+    args.fec = bool(args.fec)   
         
     small_output_filename = f"{basename_noext}_small{args.suffix}.jpg"
     ssdv_output_filename = f"{basename_noext}_ssdv{args.suffix}.bin"
@@ -157,10 +171,17 @@ def main():
     if not (0 <= args.imgid <= 255):
         print("Error: IMG ID must be between 0 and 255", file=sys.stderr)
         sys.exit(1)
+
+    if not args.fec:                
+        if not (MIN_SSDV_LENGTH <= args.length <= 256):
+            print(f"Error: SSDV packet length must be between {MIN_SSDV_LENGTH} and 256", file=sys.stderr)
+            sys.exit(1)
+    else:
+        if not ((MIN_SSDV_LENGTH + 32) <= args.length <= 256):
+            print(f"Error: SSDV packet length must be between {MIN_SSDV_LENGTH + 32} and 256", file=sys.stderr)
+            sys.exit(1)
         
-    if not (21 <= args.length <= 256):
-        print("Error: SSDV packet length must be between 21 and 256", file=sys.stderr)
-        sys.exit(1)
+
 
     os.makedirs(args.dir, exist_ok=True)
 
