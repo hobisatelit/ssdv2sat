@@ -24,8 +24,16 @@ import binascii
 DEFAULT_PACKET_LENGTH = 256
 DEFAULT_DELAY = 0
 DEFAULT_AUDIO_DIR = 'audio'
+DEFAULT_FEC = True
+# minimum packet for SSDV without FEC / reed solomon. (in bytes)
+MIN_SSDV_LENGTH = 26
 ####################################
 VERSION = '0.04'
+
+if DEFAULT_FEC:
+    DEFAULT_NOFEC = False
+else:
+    DEFAULT_NOFEC = True 
 
 ALPHANUM = string.ascii_uppercase + string.digits
 
@@ -64,7 +72,7 @@ def img2ssdv(packet_length,output_dir,input_filename,callsign,text,quality,max_s
     if fec:
         command = [os.path.join(os.getcwd(),"img2ssdv.py"), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--fec"]
     else:
-        command = [os.path.join(os.getcwd(),"img2ssdv.py"), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid)]
+        command = [os.path.join(os.getcwd(),"img2ssdv.py"), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--no-fec"]
     
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # waiting until app finish 
@@ -99,21 +107,36 @@ def ax25_address(call, last=False):
 def main():
     parser = argparse.ArgumentParser(
         description="Convert an image into SSDV, transmit over AX25/IL2P using Dire Wolf KISS and record as audio wav",
-        epilog="Example:./tx.py [CALSIG] input.jpg"
+        epilog="""Example:
+        recommended:
+        ./tx.py input.jpg
+        
+        other:
+        ./tx.py input.jpg --quality 40 --max-size 800 600
+        ./tx.py input.jpg --norec
+        ./tx.py input.jpg --max 150 --no-fec
+        ./tx.py CALSIG input.jpg
+        ./tx.py input.jpg --sms "Hello World, message from space"
+        ./tx.py input.jpg --port 8100
+        ./tx.py CALSIG original.png --turbo --sms "Hello world! this is message from space!" --dest ISS 
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("callsign", nargs='?', help="your actual callsign", default="")
     parser.add_argument("filename", help="input image file (JPG, PNG, etc)")
     parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8001, help="Dire Wolf KISS TCP port (default: 8001)")
-    parser.add_argument("--turbo", action="store_true", help="EXPERIMENTAL")
+    parser.add_argument("--turbo", action="store_true", help="EXPERIMENTAL: Remove callsign and basic header. Make header shorter than normal. Make SSDV smaller and faster. If you don't provide a CALLSIGN, turbo mode will be enabled by default")
+    parser.add_argument("--ax25", action="store_true", help="Add AX25 frame that contain CALLSIGN, DEST header, total frame and other info. Make header bigger. Default: disable")
     parser.add_argument("--max", type=int, default=DEFAULT_PACKET_LENGTH,
-                        help=f"Max data bytes per frame (default: {DEFAULT_PACKET_LENGTH}, min 21, max 256)")
+                        help=f"Max data bytes per frame (default: {DEFAULT_PACKET_LENGTH}, non fec min {MIN_SSDV_LENGTH} or fec min {MIN_SSDV_LENGTH + 32}, max 256)")
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY,
                         help=f"Delay between frames in seconds (default: {DEFAULT_DELAY}, use 0.1-3s for longer satellite pass, and 0 for shortest)")
     parser.add_argument("--quality", type=int, default=20,
                         help="JPEG quality 1–95 (default: 20 – good for SSDV)")
     parser.add_argument("--norec", action="store_true", help="No record WAV, tx only to Dire Wolf. Default: tx and record")                      
-    parser.add_argument("--fec", action="store_true", help="Encode SSDV packets with FEC. Default: non FEC")
+    parser.add_argument("--fec", action='store_true', default=DEFAULT_FEC, help=f"Encode SSDV packets with FEC (Reed Solomon). Default: {DEFAULT_FEC}") 
+    parser.add_argument("--no-fec", action='store_false',default=DEFAULT_NOFEC, dest='fec', help=f"Encode SSDV packets without FEC (Reed Solomon). Default: {DEFAULT_NOFEC}") 
     parser.add_argument("--text", type=str, default='',
                         help="put small text in the top-left corner of the SSDV image") 
     parser.add_argument("--sms", type=str, default='',
@@ -133,10 +156,17 @@ def main():
     if max_w < 16 or max_h < 16:
         print("Error: max dimensions must be at least 16 pixels", file=sys.stderr)
         sys.exit(1)
-                    
-    if not (21 <= args.max <= 256):
-        print("Error: --max should be between 21 and 256")
-        sys.exit(1)
+    
+    if not args.fec:                
+        if not (MIN_SSDV_LENGTH <= args.max <= 256):
+            print(f"Error: --max should be between {MIN_SSDV_LENGTH} and 256")
+            sys.exit(1)
+    else:
+        # for ssdv with fec = add 32 bytes for rs
+        if not ((MIN_SSDV_LENGTH + 32) <= args.max <= 256):
+            print(f"Error: --max should be between {MIN_SSDV_LENGTH + 32} and 256")
+            sys.exit(1)
+            
     if not (1 <= args.quality <= 95):
         print("Error: quality must be between 1 and 95", file=sys.stderr)
         sys.exit(1)
@@ -153,11 +183,15 @@ def main():
     filename = args.filename
     FEC_SUFFIX = ''
     
+    # if user not provide callsign, automatic change to turbo mode
+    if not SRC_CALL:
+        args.turbo = True
+     
     # override args.fec
     if args.turbo:
-        args.fec = False
-        SRC_CALL = ''
-        FEC_SUFFIX = '_TURBO'
+        #args.fec = False
+        #SRC_CALL = ''
+        FEC_SUFFIX += '_TURBO'
 
     os.makedirs(AUDIO_DIR, exist_ok=True)
 
@@ -173,7 +207,9 @@ def main():
     IMG_ID = crc32(filename)
     
     if args.fec:
-        FEC_SUFFIX = "_FEC"
+        FEC_SUFFIX += "_FEC"
+    else:
+        FEC_SUFFIX += "_NO-FEC"
     
     FILE_SUFFIX = f"{SRC_CALL}_IMG{IMG_ID}_{PACKET_LENGTH}b_{FRAME_DELAY}s_{args.quality}q{FEC_SUFFIX}"
     
@@ -224,7 +260,7 @@ def main():
     total_frames = (total_bytes + PACKET_LENGTH - 1) // PACKET_LENGTH
 
     src_addr = ax25_address(SRC_CALL)
-    dest_addr = ax25_address(str(IMG_ID) + str(hex(total_frames)[2:]), last=True)
+    dest_addr = ax25_address(str(hex(IMG_ID)[2:]) + str(hex(total_frames)[2:]), last=True)
     
     dest_sms = src_addr
     if args.dest:
@@ -274,9 +310,11 @@ def main():
         
         if args.turbo:
             payload = payload[6:]
-            frame = payload
-        else:
-            frame = dest_addr + src_addr + b'\x03\x03' + payload
+            
+        if args.ax25:
+            payload = dest_addr + src_addr + b'\x03\x03' + payload    
+            
+        frame = payload
             
         kiss_frame = FEND + b'\x00' + kiss_escape(frame) + FEND
         
@@ -341,7 +379,8 @@ def main():
         except KeyboardInterrupt:
             print("\r  ")
                
-        finally:   
+        finally:
+            print(" → WAIT! DONT PRESS ANYKEY!..")   
             time.sleep(3)
             stop_recording(wav_process)
             if os.path.exists(os.path.join(AUDIO_DIR, output_wav)):
