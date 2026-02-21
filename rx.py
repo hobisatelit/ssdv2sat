@@ -3,9 +3,13 @@
 # https://github.com/hobisatelit/ssdv2sat
 # License: GPL-3.0-or-later
 # SSDV doc: https://ukhas.org.uk/doku.php?id=guides:ssdv
+# SSDV-FEC doc: (not yet implemented, coming soon)
+# https://destevez.net/2023/05/an-erasure-fec-for-ssdv/
+# https://github.com/daniestevez/ssdv-fec/tree/main/ssdv-fec
+# some code taken from SSDV Merge - Philip Heron <phil@sanslogic.co.uk>
 
 # This script connects to a Dire Wolf KISS TCP server (port 8001 by default)
-# and extracts SSDV packets from IL2P payloads
+# and extracts SSDV packets from payloads (IL2P or non IL2P)
 #
 # Payload structure from Dire Wolf KISS:
 #   bytes 0–15:   AX25 header (used as image fingerprint / unique id)
@@ -24,8 +28,11 @@
 #   offset  6   : image ID    1 byte
 #   offset 7–8  : packet ID  2 bytes (big-endian)
 #   offset 9,10 : width, height 1 byte
-#   offset 9–255: image data (247 bytes)
-VERSION = '0.03'
+#   offset 11   : flags 1 byte
+#   offset 12   : mcu offset 1 byte
+#   offset 13-14: mcu index 2 byte
+#   offset 15–251: image data (27 bytes)
+VERSION = '0.04'
 
 import socket
 import argparse
@@ -36,31 +43,40 @@ import subprocess
 import configparser
 import re
 from collections import defaultdict
+import binascii
+import struct
+
+# minimum packet from modem (in bytes) (direwolf, etc)
+MIN_APRS_LENGTH = 1
+
+# minimum packet for SSDV without FEC / reed solomon. (in bytes)
+MIN_SSDV_LENGTH = 26
+
+# default value for file2afsk nonstandard ssdv offset (experimental)
+OFFSET = 18
+DEEPLENGTH = 256
+
+# variable length
+VAR_LENGTH = [128,256]
 
 KISS_FEND = b'\xC0'
 KISS_DATA_FRAME = 0x00
 
-# 16 byte il2p header + 64 byte minimum ssdv 
-# MIN_PACKET_LENGTH = 16 + 64
-MIN_PACKET_LENGTH = 16
-
-# default value for file2afsk nonstandard ssdv offset (experimental)
-OFFSET = 18
-
 def replace_na(input_string):
     return re.sub(r'\W+', '_', input_string)
     
-def show_progress(i, n, width=20):
+def show_progress(i, n, width=10):
     p = int(i) / int(n)
     pdec = int(p*100)
     bar = "█" * int(width * p) + "░" * (width - int(width * p))
-    output = f"|{bar}| {pdec:5d}% | frags {i:4d}/{n}"
+    output = f"|{bar}| {pdec:5d}% | {i:4d}/{n}"
     return output
 
 def ssdv_decoding(packet_length,input_filename,output_filename):
   try:
-    command = [DEFAULT_APP_SSDV, "-d", "-l", str(packet_length), input_filename, output_filename]
-    return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    command = [DEFAULT_APP_SSDV, "-v", "-d", "-l", str(packet_length), input_filename, output_filename]
+    #return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) 
   except FileNotFoundError:
     return None
   except subprocess.CalledProcessError as e:
@@ -68,7 +84,7 @@ def ssdv_decoding(packet_length,input_filename,output_filename):
     return None
 
 def kiss_unescape(data: bytes) -> bytes:
-    """Remove KISS escaping from frame content"""
+    #Remove KISS escaping from frame content
     out = bytearray()
     i = 0
     while i < len(data):
@@ -85,49 +101,244 @@ def kiss_unescape(data: bytes) -> bytes:
             out.append(data[i])
             i += 1
     return bytes(out)
+   
+def parse_ssdv_packet_deep(packet,verbose: bool = False):    
+    fec = False  
+    dump = ''
+    if packet[0] == 0x55:
+        if packet[1] == 0x66:
+            packet_without_fec = packet[0:(len(packet) - 32)]
+            fec =  True           
+        elif packet[1] == 0x67:
+            packet_without_fec = packet           
+        else:
+            if verbose:
+                print(f" → Invalid sync bytes: {packet[0]:02X} {packet[1]:02X} (expected 55 66 or 55 67)")
+            return False
 
-def bytes_to_hex_preview(b: bytes, max_chars: int = 96) -> str:
-    """Convert bytes to space-separated hex string, truncated if long"""
-    hex_str = b.hex(' ')
-    if len(hex_str) > max_chars:
-        return hex_str[:max_chars] + '...'
-    return hex_str    
-
-def parse_ssdv_packet(ssdv_bytes: bytes, verbose: bool = False) -> dict | None:
-    """
-    Validate and parse the SSDV packet.
-    """        
-    if ssdv_bytes[0] != 0x55 and (ssdv_bytes[1] != 0x67 or ssdv_bytes[1] != 0x66):
+    else:
         if verbose:
-            print(f" → Invalid sync bytes: {ssdv_bytes[0]:02X} {ssdv_bytes[1]:02X} (expected 55 66 or 55 67)")
-        return None
-        
-    callsign = int.from_bytes(ssdv_bytes[2:6])
+            print(f" → Invalid sync bytes: {packet[0]:02X} {packet[1]:02X} (expected 55 66 or 55 67)")
+        return False
 
-	# Decode the callsign
-    code = callsign
-    callsign = ''
+    # 5566 = b'Uf' = 102 = 0
+    # 5567 = b'Ug' = 103 = 1
+    # packet = b'Ug' + packet[2:]
+    
+    # 32 come from min ssdv 64 - fec 32 = 32
+    if len(packet_without_fec) < MIN_SSDV_LENGTH:
+        if verbose:
+            print(f"PACKET TOO SMALL = {len(packet_without_fec)}")
+            print(packet.hex())
+        return False
+
+    # Unpack packet
+    keys = [ 'sync', 'type', 'callsign', 'image_id', 'packet_id',
+             'width', 'height', 'flags', 'mcu_offset', 'mcu_index',
+             'payload', 'checksum' ]
+    parts = struct.unpack('>2BIBH4BH%dsI' % (len(packet_without_fec) - 19), packet_without_fec)
+       
+    parts = dict(zip(keys, parts))
+    
+    if fec:
+        parts['type'] = '0'
+    else:
+        parts['type'] = '1'
+    
+ 
+    # Test the checksum
+    parts['length'] = len(packet)       
+    dump += f"LENGTH = {parts['length']}\n"
+    crc32 = binascii.crc32(packet[1:len(packet_without_fec) - 4]) & 0xFFFFFFFF
+    dump += f"CRC32 = {crc32} = {parts['checksum']}\n"
+    if crc32 != parts['checksum']:
+        parts['crc32'] = False
+        dump += f"CRC = --- FALSE START ---\n"
+        dump += packet.hex()
+        dump += f"\nCRC = --- FALSE END ---\n"
+    else:
+        parts['crc32'] = True
+        dump += "CRC = TRUE\n"
+    
+    # Decode the callsign
+    code = parts['callsign']
+    parts['callsign_decode'] = ''
     while code:
-      callsign += '-0123456789---ABCDEFGHIJKLMNOPQRSTUVWXYZ'[code % 40]
-      code //= 40
-
-    if not callsign:
-        callsign = "unknown"
+        parts['callsign_decode'] += '-0123456789---ABCDEFGHIJKLMNOPQRSTUVWXYZ'[code % 40]
+        code //= 40
         
-    packet_id = (ssdv_bytes[7] << 8) | ssdv_bytes[8]   
-        
-    return {
-        'callsign': callsign,
-        'packet_id': packet_id,
-        'image_id': ssdv_bytes[6],
-        'image_data': ssdv_bytes[0:],  
-        'image_width': ssdv_bytes[9],
-        'image_height': ssdv_bytes[10]
-    }
+    if not parts['callsign_decode']:
+        parts['callsign_decode'] = 'unknown'
 
-def main(args):
+    parts['callsign'] = parts['callsign_decode']
+     
+    dump += f"CODE = {parts['callsign']} = {parts['callsign_decode']}\n"
+
+    # Parse the flags
+    parts['quality'] = ((parts['flags'] >> 3) & 7) ^ 4
+    parts['eoi'] = (parts['flags'] >> 2) & 1
+    parts['mcu_mode'] = parts['flags'] & 0x03
+    parts['reserved'] = (parts['flags'] >> 6) & 0x03
+    
+    dump += f"flags = {parts['flags']}\n"
+    dump += f"flags = 0x{parts['flags']:02x} | binary = {bin(parts['flags'])[2:].zfill(8)}\n"
+    dump += f"reserved = {parts['reserved']:02b}\n"
+    dump += f"quality = {parts['quality']}\n"
+    dump += f"eoi = {parts['eoi']}\n"
+    dump += f"mcu_mode = {parts['mcu_mode']}\n"
+    
+    # Count the total number of MCU blocks
+    parts['mcu_count'] = parts['width'] * parts['height']
+    if parts['mcu_mode'] in (1, 2): parts['mcu_count'] *= 2
+    elif parts['mcu_mode'] == 3: parts['mcu_count'] *= 4
+    
+    if parts['mcu_mode'] == 0:
+        parts['width'] *= 16
+        parts['height'] *= 16
+    elif parts['mcu_mode'] == 1:
+        parts['width'] *= 16
+        parts['height'] *= 8
+        parts['mcu_count'] *= 2
+    elif parts['mcu_mode'] == 2:
+        parts['width'] *= 8
+        parts['height'] *= 16
+        parts['mcu_count'] *= 2
+    elif parts['mcu_mode'] == 3:
+        parts['width'] *= 8
+        parts['height'] *= 8
+        parts['mcu_count'] *= 4
+    
+    parts['fingerprint'] = '-'.join([
+        str(parts['type']),
+        str(parts['callsign']),
+        str(parts['image_id']),
+        str(f"{parts['width']}x{parts['height']}"),
+        str(parts['quality']),
+        str(parts['mcu_mode']),
+    ])
+    
+    dump += f"fingerprint = {parts['fingerprint']}"
+    
+    # Include the full packet
+    parts['packet'] = packet
+    
+    if args.verbose:
+        print(dump)
+        
+    if parts['crc32']:
+        return parts  
+    else:
+        return False
+    
+def ssdv_check(data,var_length,output_dir,verbose: bool = False):
+    result = False
+    
+    # add x00 padd on left side
+    packet = data.rjust(256, b'\x00')
+    
+    # add x00 padd on right side
+    packet = packet.ljust(300, b'\x00')
+    
+    # Write in packet on cache file
+    with open(f"{output_dir}/.cache.in", "wb") as f:
+        f.write(packet)
+    
+    extracted_data = defaultdict(dict)
+        
+    for length in var_length:                                                 
+        # save to temporary file, just to check if output is contain packets
+        # avoiding delete or remove command
+        ssdv_null = ssdv_decoding(length,f"{output_dir}/.cache.in",f"{output_dir}/.cache.out") 
+        stdout, stderr = ssdv_null.communicate()  
+        if "Read 1 packets" in stderr.decode():
+            data = stderr.decode()
+            # Initialize a dictionary to store the extracted data
+            
+            extracted_data['length'] = length
+            
+            # Extract Skipped bytes
+            extracted_data['skipped'] = 0
+            skipped_match = re.search(r'Skipped (\d+) bytes.', data)
+            if skipped_match:
+                extracted_data['skipped'] = int(skipped_match.group(1))
+                
+            # Extract Callsign
+            callsign_match = re.search(r'Callsign: "(.*?)"', data)
+            if callsign_match:
+                extracted_data['callsign'] = callsign_match.group(1)
+
+            # Extract Image ID
+            image_id_match = re.search(r'Image ID: (\d+)', data)
+            if image_id_match:
+                extracted_data['image_id'] = int(image_id_match.group(1))
+
+            # Extract Resolution (width and height)
+            resolution_match = re.search(r'Resolution: (\d+)x(\d+)', data)
+            if resolution_match:
+                extracted_data['width'] = int(resolution_match.group(1))
+                extracted_data['height'] = int(resolution_match.group(2))
+
+            # Extract Packet ID
+            packet_id_match = re.search(r'Packet ID: (\d+)', data)
+            if packet_id_match:
+                extracted_data['packet_id'] = int(packet_id_match.group(1))
+
+            # Extract Type
+            type_match = re.search(r'Type: (\d+)', data)
+            if type_match:
+                extracted_data['type'] = int(type_match.group(1))
+
+            # Extract Quality
+            quality_match = re.search(r'Quality: (\d+)', data)
+            if quality_match:
+                extracted_data['quality'] = int(quality_match.group(1))
+
+            # Extract MCU Mode
+            mcu_mode_match = re.search(r'MCU Mode: (\d+)', data)
+            if mcu_mode_match:
+                extracted_data['mcu_mode'] = int(mcu_mode_match.group(1)) 
+
+            extracted_data['crc32'] = True
+            
+            if not extracted_data['callsign']:
+                extracted_data['callsign'] = 'unknown'
+                             
+            extracted_data['fingerprint'] = '-'.join([
+                str(extracted_data['type']),
+                str(extracted_data['callsign']),
+                str(extracted_data['image_id']),
+                str(f"{extracted_data['width']}x{extracted_data['height']}"),
+                str(extracted_data['quality']),
+                str(extracted_data['mcu_mode']),
+            ])
+            
+            if verbose:
+                print(f"SSDV check fingerprint = {extracted_data['fingerprint']}")
+                
+            break
+    
+    if extracted_data['crc32']:        
+        return extracted_data
+    else:
+        return False
+        
+# custom print and log function
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+        
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+            
+    def flush(self):
+        for f in self.files:
+            f.flush()
+    
+def main(args):   
+    output_dir = args.output_dir         
     print(f"Connecting to Dire Wolf KISS TCP at {args.host}:{args.port} ...")
-
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((args.host, args.port))
@@ -135,29 +346,35 @@ def main(args):
     except Exception as e:
         print(f"Connection failed: {e}", file=sys.stderr)
         sys.exit(1)
+        
+    print(f"Decode SSDV image fragments to: {output_dir}")
+    print(f"Expecting min {MIN_APRS_LENGTH} bytes for APRS and {MIN_SSDV_LENGTH} bytes for SSDV")
 
-    # output/ folder next to script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "output")
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Decode SSDV image fragments to: {output_dir}/")
-    print(f"Expecting 16-byte AX25 (APRS/IL2P) for ID + min {MIN_PACKET_LENGTH - 16}-byte for SSDV")
-
-    # (callsign, image_id) → {packet_id: image_data (186 bytes)}
-    formatted_time = time.strftime("%Y-%m-%dT%H-%M-%S")
     images = defaultdict(dict)
     images_inv = defaultdict(dict)
     parsed = defaultdict(dict)
     images_dump = defaultdict(dict)
+    temp_packet = defaultdict(dict)
+    parsed_total_frame = defaultdict(dict)
     total_valid = 0
     total_invalid = 0
+    total_nonssdv = 0
+    total_deepsearch = 0
+    total_recovered = 0
+    total_all = 0
+    total_turbo = 0
+    total_filter = 0
+    dump = b''
     progress = False
+    loop = 0
 
     packet_buf = bytearray()
     in_frame = False
 
     temp = ''
 
+    i = 0
+    x = 0
     while True:
         try:
             chunk = sock.recv(1024)
@@ -173,7 +390,10 @@ def main(args):
             break        
 
         for byte in chunk:
+            i+=1
+            #print(f"work! = {i} {byte}")
             if byte == 0xC0:
+                #print("192")
                 if in_frame:
                     # Frame complete
                     if len(packet_buf) >= 1:
@@ -181,230 +401,454 @@ def main(args):
                         payload = kiss_unescape(packet_buf[1:])
 
                         if frame_type == KISS_DATA_FRAME:
-                            if len(payload) >= MIN_PACKET_LENGTH:
-                                #search ssdv header position, support non standard ax25 frame
-                                #ssdv_part = payload[16:]
-                                #position = next((payload.find(seq) for seq in (b'\x55\x67', b'\x55\x66') if payload.find(seq) != -1), -1)
-                                position = [i for i in range(len(payload)-1) if payload[i:i+2] in (b'\x55\x66', b'\x55\x67')]
-                                #only first
+                            total_all += 1
+                            if len(payload) >= MIN_APRS_LENGTH:
+                                if args.verbose:
+                                    print(f"--- START # {i} ---")
                                 
-                                if position:
-                                    position = position[0]
+                                #search ssdv header position, support non ax25 frame
+                                #ssdv_part = payload[16:]
+                                discover = [i for i in range(len(payload)-1) if payload[i:i+2] in (b'\x55\x66', b'\x55\x67')]
+
+                                #packet = b'\x00'
+                                
+                                bypass = False
+                                ssdv_result = ''
+                                turbo_text = ''
+                                recovered_text = ''
+                                
+                                #discover and keep ssdv with normal header first
+                                if discover:
+                                    position = discover[0]
+                                    
+                                #then search and try guest ssdv with broken header        
+                                elif not discover and len(payload) >= MIN_SSDV_LENGTH - 6: # searching turbo, minus 6 bytes header (2 byte sync type + 4 byte callsign)
+                                    headers = [b'\x66', b'\x67']
+                                    position = -1
+                                    eoi = False
+                                    
+                                    # first attempt, guest and fix packet as packet with Turbo header
+                                    for header in headers:
+                                        # from 0, without 16 byte ax25 frame
+                                        if header == b'\x66' and len(payload) < MIN_SSDV_LENGTH + 32:
+                                            break
+                                             
+                                        if args.verbose:
+                                            print(f"ATTEMPT 1: TURBO HEADER RECOVERING.. :")
+                    
+                                        packet = b'\x55' + header + b'\x00\x00\x00\x00' + payload
+                                        ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+
+                                        if ssdv_result:
+                                            if ssdv_result['crc32']:
+                                                total_turbo += 1
+                                                if args.verbose:
+                                                    print(f" → RECOVERED 1! {len(payload)} → padded to {len(packet)} bytes")
+                                                turbo_text = '(Full Turbo)'                                                    
+                                                payload = packet
+                                                ssdv_bypass_len = len(payload)
+                                                position = 0
+                                                bypass = True
+                                                #if ssdv_result['eoi']:
+                                                #    eoi = True
+                                                break
+                                            else:
+                                                if args.verbose:
+                                                    print(f" → FAIL")
+                                        
+                                        # from 16, with 16 byte ax25 frame            
+                                        if header == b'\x66' and len(payload[16:]) < MIN_SSDV_LENGTH + 32:
+                                            break
+                                             
+                                        if args.verbose:
+                                            print(f"ATTEMPT 1: TURBO HEADER RECOVERING + AX25.. :")
+                    
+                                        packet = b'\x55' + header + b'\x00\x00\x00\x00' + payload[16:]
+                                        ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+
+                                        if ssdv_result:
+                                            if ssdv_result['crc32']:
+                                                total_turbo += 1
+                                                if args.verbose:
+                                                    print(f" → RECOVERED 1! {len(payload)} → padded to {len(packet)} bytes")
+                                                turbo_text = '(Turbo + AX25)'                                                    
+                                                payload = payload[0:16] + packet
+                                                ssdv_bypass_len = len(packet)
+                                                position = 16
+                                                bypass = True
+                                                #if ssdv_result['eoi']:
+                                                #    eoi = True
+                                                break
+                                            else:
+                                                if args.verbose:
+                                                    print(f" → FAIL")
+                                                    
+
+                                    
+                                    # second attempt, guest and try recover packet as packet with Reed Solomon / FEC            
+                                    if not bypass and len(payload) >= MIN_SSDV_LENGTH + 32:
+                                        packet = payload
+                                        if args.verbose:
+                                            print(f"ATTEMPT 2: FEC Reed Solomon RECOVERING (Broken Header).. LENGTH: {len(payload)} bytes...")
+                                            print(packet.hex())
+                                                    
+                                        ssdv_result = ssdv_check(packet, VAR_LENGTH, output_dir, args.verbose)
+                                        if ssdv_result:
+                                            total_recovered += 1
+                                            #accurate len from ssdv_result
+                                            ssdv_bypass_len = int(ssdv_result['length'])
+                                            if args.verbose:
+                                                print(f" → RECOVERED FEC 2 = {len(payload)} → padded to {ssdv_bypass_len} bytes")
+                                            recovered_text = '(Recovered FEC 2)'
+                                            payload = packet[ssdv_result['skipped']:]
+                                            position = 0
+                                            bypass = True
+                                        else:
+                                            temp_done=''
+                                            for length in VAR_LENGTH:
+                                                temp_done += f"{length}:"
+                                            temp_packet[i,'packet'] = packet
+                                            temp_packet[i,'done'] = temp_done
+                                            if args.verbose:
+                                                print(f" → FAIL, length is not match, will try again latter .. {len(payload)} bytes")
+                                                     
                                 else:
                                     position = -1
+                                        
 
-                                src_field = payload[7:14]
-                                dest_field = payload[0:7]
-                                pid_field = payload[15:16].hex()
+                                # parsing ax25 frame, applied for sms (non ssdv) and ssdv with ax25 frame
+                                file_id = ''
+                                img_id = ''
+                                pid_field = ''
+                                total_frame_text = ''
+                                total_frame = 0
+                                if position == -1 or position >= 16:
+                                    src_field = payload[7:14]
+                                    dest_field = payload[0:7]
+                                    pid_field = payload[15:16].hex()
+                                    
+                                    src_call = ''.join(chr(c >> 1) for c in src_field[:6]).strip()
+                                    file_id = ''.join(chr(c >> 1) for c in dest_field[:6]).strip()
+                                    
+                                    src_call = replace_na(src_call)
+                                    file_id = replace_na(file_id)       
                                 
-                                src_call = ''.join(chr(c >> 1) for c in src_field[:6]).strip()
-                                file_id = ''.join(chr(c >> 1) for c in dest_field[:6]).strip()
-                                
-                                src_call = replace_na(src_call)
-                                file_id = replace_na(file_id)
-                                
+                                # process both ssdv (normal and broken header)
                                 # ssdv or not?
                                 if position >= 0:
+                                    
+                                    save_ssdv = False    
                                     ssdv_part = payload[position:]
                                     ssdv_len = len(ssdv_part)
                                     
-                                    ssdv_type = ssdv_part[1:2].hex()
-
-                                    ssdv_normal = False
-                                    ssdv_text = "NON FEC"
-                                    if ssdv_type == "66":
-                                         ssdv_normal = True 
-                                         ssdv_text = "FEC"
-                                                                        
-                                    total_frame_text = ""
-                                    total_frame = 0
-                                    img_id=""
-                                    if position >= 16:
-                                        try:
-                                            # support backward for old ssdv2sat
-                                            if pid_field == 'f0':
-                                                img_id = f"_{file_id[0:3]}"
-                                                total_frame = int(file_id[3:],16)
-                                                total_frame_text = f"/ {total_frame}"
-                                            elif pid_field == '03':   
-                                                img_id = f"_{file_id[0:2]}"
-                                                total_frame = int(file_id[2:],16)
-                                                total_frame_text = f"/ {total_frame}"
-                                        except ValueError:
-                                            pass                                             
-                                        
-                                    #dump for ssdv_normal (with fec)
-                                    #support backward for file2aprs and custom rough split
-                                    if ssdv_normal and position > 16:
-                                        parsed['image_data'] = payload[args.offset:]
-                                        key = (src_call, img_id)
-                                        images_dump[key][total_valid] = parsed['image_data']
-                                        fname_dump = f"{src_call}{img_id}-ssdv-fec.bin"
-                                        path_dump = os.path.join(output_dir, fname_dump)
-                                        with open(path_dump, "ab") as f:
-                                                f.write(parsed['image_data'])
-                                        ssdv_process = ssdv_decoding(256,path_dump,os.path.join(output_dir, f"{src_call}{img_id}-ssdv-fec.jpg"))
-                                        
-                                    #minimum data ssdv  (look at parse_ssdv_packet function)  
-                                    if ssdv_len >= 10:
-                                        parsed = parse_ssdv_packet(ssdv_part)
-                                        
-                                        if position >= 16:
-                                            parsed['callsign'] = src_call
-
-                                        image_width=int(parsed['image_width'])*16
-                                        image_height=int(parsed['image_height'])*16
-                                        image_size=f"{image_width}x{image_height}"
-
-                                        parsed['image_id'] = f"{img_id}_img{parsed['image_id']}_{image_size}"  
-                                        
-                                        key = (parsed['callsign'], f"{parsed['image_id']}_{ssdv_len}bs")
-                                        was_new = len(images[key]) == 0
-                                        #print(f"was_new={was_new}")
-
-                                        images[key][parsed['packet_id']] = parsed['image_data']
-
-                                        fname_noext = f"{parsed['callsign']}{parsed['image_id']}_{ssdv_len}bs"
-                                        fname = f"{fname_noext}.bin"
+                                    # main variable: ssdv_len, ssdv_part and parsed
   
-                                        path = os.path.join(output_dir, fname)
-
-                                        # Write in packet ID order
-                                        with open(f"{path}", "wb") as f:
-                                            for pid in sorted(images[key]):
-                                                f.write(images[key][pid])
-
-                                        if progress and temp[0:1] == '_':
-                                            if temp != parsed['image_id']:
-                                                print()
-                                                  
-                                        if was_new:
-                                            print(f" ✱ New from: {parsed['callsign']}, image: {parsed['image_id']} ({ssdv_len} bytes/frag)") 
- 
-                                        if not args.simple:
-                                            print(f" → {parsed['callsign']:<7} | {parsed['image_id']:<18} | Packet {parsed['packet_id']:5d}"
-                                                  f" | {(str(len(images[key])) + str(total_frame_text)):>7} frags")
+                                    #make sure ssdv length have minimum requirement
+                                    if ssdv_len >= MIN_SSDV_LENGTH:
+                                        if bypass:
+                                        # turbo and fec recovered    
+                                            parsed = ssdv_result
+                                            #replace ssdv_len with correct length
+                                            ssdv_len = ssdv_bypass_len
+                                            if args.verbose:
+                                                print("PARSE RECOVERY PACKET")
+                                            save_ssdv = True
                                         else:
-                                                
-                                            if total_frame:    
-                                                progress = show_progress(len(images[key]), total_frame)
+                                        # normal packet
+                                            if args.verbose:
+                                                print("PARSE NORMAL PACKET")
+                                                #print(parsed)
+                                            parsed = parse_ssdv_packet_deep(ssdv_part,args.verbose)
+                                        if parsed:
+                                            #print(parsed)
+                                            save_ssdv = True
+                                            #if parsed['eoi']:
+                                            #    eoi = True    
+                                        # only recover fec packet only (with 32 bytes reed solomon)
+                                        else:
+                                            if ssdv_len >= MIN_SSDV_LENGTH + 32:                                       
+                                                packet = ssdv_part
+                                                if args.verbose:
+                                                    print(f"ATTEMPT 3: FEC Reed Solomon RECOVERING (Normal header).. LENGTH: {len(ssdv_part)} bytes...")
+                                                    print(packet.hex())                
+                                                ssdv_result = ssdv_check(packet, VAR_LENGTH, output_dir, args.verbose)
+                                                if ssdv_result:
+                                                    save_ssdv = True
+                                                    parsed = ssdv_result
+                                                    total_recovered += 1
+                                                    ssdv_len = ssdv_result['length']
+                                                    ssdv_part = packet[ssdv_result['skipped']:]
+                                                    if args.verbose:
+                                                        print(f" → RECOVERED FEC 3 = {len(payload)} → padded to {ssdv_len} bytes")
+                                                    recovered_text = '(Recovered FEC 3)'
+                                                else:
+                                                    temp_done=''
+                                                    for length in VAR_LENGTH:
+                                                        temp_done += f"{length}:"
+                                                    temp_packet['packet'][i] = packet
+                                                    temp_packet['done'][i] = temp_done
+                                                    if args.verbose:
+                                                        print(f" → FAIL, maybe no length is match, will try again latter .. {len(payload)} bytes")
+                                                        
+
+                                                    #last attempt ..
+                                                    #print("LAST ATTEMPT")      
+                                                    #print(f"var_length = {VAR_LENGTH}")  
+                                                    #print(f"{temp_packet['packet']}")
+                                                    #print(f"{temp_packet['done']}")
+                                                    
+                                                    for length in VAR_LENGTH:
+                                                        for n in temp_packet['packet']:
+                                                            # print(f"searching {length} === {n} = {temp_packet['done'][n]}")
+                                                            if str(length) not in temp_packet['done'][n]:
+                                                                packet = temp_packet['packet'][n]
+                                                                if args.verbose:
+                                                                    print(f"ATTEMPT 4: unusual packet length.. try decode with length: {length}")
+                                                                    print(packet.hex())          
+                                                                single_length = [length]      
+                                                                ssdv_result = ssdv_check(packet, single_length, output_dir, args.verbose)
+                                                                if ssdv_result:
+                                                                    save_ssdv = True
+                                                                    parsed = ssdv_result
+                                                                    total_recovered += 1
+                                                                    ssdv_len = ssdv_result['length']
+                                                                    ssdv_part = packet[ssdv_result['skipped']:]
+                                                                    if args.verbose:
+                                                                        print(f" → RECOVERED FEC 4 = {len(packet)} → padded to {ssdv_len} bytes")
+                                                                    recovered_text = '(Recovered FEC 4)'
+                                                                    temp_packet['packet'].pop(n)
+                                                                    temp_packet['done'].pop(n)
+                                                                else:
+                                                                    temp_packet['done'][n] += f"{length}:"
+                                                    # last attempt end ..               
+                                        
+                                        if save_ssdv: 
+                                            #add VALID LENGTH                  
+                                            if ssdv_len not in VAR_LENGTH:
+                                                VAR_LENGTH.append(ssdv_len)
+                                                if args.verbose:
+                                                    print(f" → Add new length: {ssdv_len}")
+                                            # support for ax25 enabled frame (total frame)
+
+                                            
+                                            if position >= 16:
+                                                #callsign = src_call
+                                                try:
+                                                    # support backward for old ssdv2sat
+                                                    if pid_field == 'f0':
+                                                        img_id = f"_{file_id[0:3]}"
+                                                        total_frame = int(file_id[3:],16)
+                                                        total_frame_text = f"/ {total_frame}"
+                                                    elif pid_field == '03':   
+                                                        img_id = f"_{file_id[0:2]}"
+                                                        total_frame = int(file_id[2:],16)
+                                                        total_frame_text = f"/ {total_frame}"
+                                                except ValueError:
+                                                    pass 
+
+                                            #print(f"file_id = {file_id} | superb: {total_frame_text}")    
+                                            callsign = parsed['callsign']
+                                            ssdv_normal = False
+                                            ssdv_text = ""
+                                            
+                                            #print(f"parsed = {parsed}")
+
+                                            if parsed['type'] == "0":
+                                                ssdv_normal = True 
+                                                ssdv_text = "FEC"
+                                            elif parsed['type'] == "1":
+                                                ssdv_normal = False 
+                                                ssdv_text = "NON FEC"
                                             else:
-                                                progress = f"| {len(images[key]):4d} frags"  
-                                    
-                                            print(f"\r → {parsed['callsign']:<7} | {parsed['image_id']:<18} | Packet {parsed['packet_id']:5d} {progress}", end="")           
-                                            temp = parsed['image_id']
-                                            progress=True
+                                                ssdv_text = "??"
+                                                     
+                                            #print(f"parsed = {parsed}")
+
+                                            fingerprint = f"{parsed['fingerprint']}_{ssdv_len}bs"                                                                                      
+                                            key = (callsign, fingerprint)
                                             
-                                        if args.verbose:
+                                            was_new = len(images[key]) == 0
+                                            
+                                            images[key][parsed['packet_id']] = ssdv_part
+                                                 
+                                            '''
+                                            fname_noext = f"{parsed['callsign']}{parsed['image_id']}"
+                                            fname = f"{fname_noext}.bin"
+      
+                                            print(f"FILENAME = {fname}-------------------")    
+                                            print(f"PARSED = {parsed}-------------------")   
+
+                                            path = os.path.join(f"{output_dir}{add_deep}", fname)
+                                            '''
+                                            
+                                            fname_noext = f"{fingerprint}"
+                                            fname = f"{fname_noext}.bin"
+                                            path = os.path.join(f"{output_dir}", fname)
+
+                                            # Write in packet ID order
+                                            with open(f"{path}", "wb") as f:
+                                                for pid in sorted(images[key]):
+                                                    f.write(images[key][pid])
+                                                    
+                                            #print(f"====== temp {temp} - {file_id} =============")
+
                                             if progress:
-                                                print()
-                                            print(f" → FROM:{src_call} → DEST:{file_id} | PID: {pid_field} | Identified SSDV: {ssdv_text} @{position} ({ssdv_len} bytes) :")
-                                            print("" + bytes_to_hex_preview(ssdv_part, 1000))
-                                            print(" → Full Payload (AX25 + Data):")
-                                            print(bytes_to_hex_preview(payload, 1000))
-                                            print()
-                                            
-                                        total_valid += 1
-                                        ssdv_process = ssdv_decoding(ssdv_len,os.path.join(output_dir, fname),os.path.join(output_dir, f"{fname_noext}.jpg"))
+                                                if temp != fingerprint: 
+                                                    print()                                                    
+                                                    
+                                            temp = fingerprint     
+                                            if was_new:
+                                                print(f" ✱ New from: {callsign}, image: {parsed['image_id']} ({ssdv_len} bytes/frag) ({ssdv_text}) {turbo_text}") 
+                                                
+                                            if not args.simple:
+                                                print(f" → {callsign:<7} | IMG {parsed['image_id']:<14} | Pkt {parsed['packet_id']:8d}"
+                                                      f" | {(str(len(images[key])) + str(total_frame_text)):>7} frags {recovered_text}")
+                                            else:
+                                                    
+                                                if total_frame:
+                                                    #print(f"total frame  = {total_frame}")     
+                                                    progress = show_progress(len(images[key]), total_frame)
+                                                else:
+                                                    progress = f"| {len(images[key]):4d} frags"  
+                                        
+                                                print(f"\r → {callsign:<7} | IMG {parsed['image_id']:<14} | Pkt {parsed['packet_id']:8d} {progress} {recovered_text}", end="")           
+                                                progress=True
+                                                
+                                            if args.verbose:
+                                                if progress:
+                                                    print()
+                                                print(f" → FROM:{callsign} → DEST:{file_id} | PID: {pid_field} | Identified SSDV: {ssdv_text} @{position} ({ssdv_len} bytes) :")
+                                                print("" + ssdv_part.hex())
+                                                print(" → Full Payload (AX25 + Data):")
+                                                print(payload.hex())
+                                                
+                                            total_valid += 1
+                                            ssdv_process = ssdv_decoding(ssdv_len,os.path.join(f"{output_dir}", fname),os.path.join(f"{output_dir}", f"{fname_noext}.jpg"))
+                                        else:
+                                            total_invalid += 1
+                                    else:
+                                        total_invalid += 1
 
                                 else:
-                                    total_invalid += 1
+                                    
+                                    #if args.verbose:
+                                    #    print(f"non ssdv: {len(payload)}")
+                                    #    print(payload.hex())
+                                    total_nonssdv += 1
+                                    
+                                    #### start
                                     ssdv_part = payload[16:]
-                                    ssdv_part2 = payload[args.offset:]
                                     ssdv_len = len(ssdv_part)
                                     text = ''
                                     # option: ignore / replace / backslashreplace / strict
                                     text = ssdv_part.decode('UTF-8', errors='ignore')
                                     cleaned_text = re.sub(r'[^ -~]+', '', text) 
-                                    cleaned_text = cleaned_text.replace('\n', '').replace('\r', '') 
-
-                                    #if temp != file_id and temp[0:1] == '_':
-                                    if progress:
-                                        print()
-                                        progress = False
-                                        
-                                    print(f" → {src_call:<7} | {file_id:<18} | OTHER # {total_invalid:4d} | {cleaned_text}")
-                                    temp = file_id
-        
-                                    if args.verbose:
-                                        print(f" → PID: {pid_field}")
-                                        print(f" → Data only in text")
-                                        print(text) 
-                                        print(f" → Data only in HEX: ({ssdv_len} bytes)")
-                                        print(bytes_to_hex_preview(ssdv_part, 1000))
-                                        print(" → Full Payload (AX25 + Data):")
-                                        print(bytes_to_hex_preview(payload, 1000))
+                                    cleaned_text = cleaned_text.replace('\n', '').replace('\r', '')
                                     
-                                    key = src_call
-                                    images_inv[key,'hex2'][total_invalid] = ssdv_part2
-                                    images_inv[key,'hex'][total_invalid] = ssdv_part
-                                    images_inv[key,'txt'][total_invalid] = text
-                                    
-                                    if not src_call:
-                                        src_call = 'unknown'
-                                    
-                                    path_bin = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.bin")
-                                    path_ascii = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.txt")
-                                    
-                                    if args.newline:
-                                        nl = '\n'
+                                    # simple anti spam
+                                    if args.nofilter:
+                                        process_nonssdv = True
                                     else:
-                                        nl = ''
+                                        if "_" in src_call or file_id:
+                                            process_nonssdv = False
+                                            total_filter += 1
+                                        else:
+                                            process_nonssdv = True
                                         
-                                    with open(path_bin, "wb") as f:
-                                        for pid in sorted(images_inv[key,'hex']):
-                                            f.write(images_inv[key,'hex'][pid])
+                                    if process_nonssdv:
+                                        if not args.onlyssdv:
+                                            if progress:
+                                                print()
+                                                progress = False
+                                                
+                                            print(f" → {src_call:<7} | {file_id:<18} | OTHER # {total_nonssdv:4d} | {cleaned_text}")
+                                            temp = file_id
+                
+                                            if args.verbose:
+                                                print(f" → PID: {pid_field}")
+                                                print(f" → Data only in text")
+                                                print(text) 
+                                                print(f" → Data only in HEX: ({ssdv_len} bytes)")
+                                                print(ssdv_part.hex())
+                                                print(" → Full Payload (AX25 + Data):")
+                                                print(payload.hex())
+                                        
+                                        key = src_call
+                                        images_inv[key,'hex'][total_nonssdv] = ssdv_part
+                                        images_inv[key,'txt'][total_nonssdv] = text
+                                        
+                                        if not src_call:
+                                            src_call = 'unknown'
+                                        
+                                        path_bin = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.bin")
+                                        path_ascii = os.path.join(output_dir, f"{src_call}-nonssdv-{formatted_time}.txt")
+                                        
+                                        if args.newline:
+                                            nl = '\n'
+                                        else:
+                                            nl = ''
                                             
-                                    with open(path_ascii, "w") as f:
-                                        for pid in sorted(images_inv[key,'txt']):
-                                            f.write(f"{images_inv[key,'txt'][pid]}{nl}")
-                                            
-                                            
-                                        try:
-                                            img_id = f"_{file_id[0:2]}"
-                                            total_frame = int(file_id[2:],16)
-                                            total_frame_text = f"/ {total_frame}"
-                                        except ValueError:
-                                            # support backward old ssdv2sat
-                                            try:
-                                                img_id = f"_{file_id[0:3]}"
-                                                total_frame = int(file_id[3:],16)
-                                                total_frame_text = f"/ {total_frame}"
-                                            except ValueError:
-                                                pass 
-                                            
-                                    #experimental    
-                                    if src_call and file_id:
-                                        fname_dump = f"{src_call}{img_id}-ssdv-fec.bin"
-                                        path_dump = os.path.join(output_dir, fname_dump)
-                                        #just append
-                                        with open(path_dump, "ab") as f:
-                                                f.write(images_inv[key,'hex2'][pid])
-                                        ssdv_process = ssdv_decoding(256,path_dump,os.path.join(output_dir, f"{src_call}{img_id}-ssdv-fec.jpg"))
-                                         
+                                        with open(path_bin, "wb") as f:
+                                            for pid in sorted(images_inv[key,'hex']):
+                                                f.write(images_inv[key,'hex'][pid])
+                                                
+                                        with open(path_ascii, "w") as f:
+                                            for pid in sorted(images_inv[key,'txt']):
+                                                f.write(f"{images_inv[key,'txt'][pid]}{nl}")
+                                    ### end
 
+                                    
+                                if args.verbose:    
+                                    print(f"--- END # {i} ---")
+                                    print()
+                            
                             else:
+                                total_nonssdv += 1
                                 if args.verbose:
-                                    print(bytes_to_hex_preview(payload, 1000))
-                                    print(f" → Wrong payload length: {len(payload)} (expected min {MIN_PACKET_LENGTH})")
+                                    print(f"# {i} - {payload.hex()} ({len(payload)} bytes)")
 
                     packet_buf = bytearray()
                     in_frame = False
                 else:
+                    #print("NO")
                     in_frame = True
                     packet_buf = bytearray()
             elif in_frame:
+                #x+=1
+                #print(f"APPEND {x} = {byte}")
                 packet_buf.append(byte)
     #print()
     sock.close()
-    print(f"\nFinished.\n → Processed {total_valid} valid SSDV packets.\n → Processed {total_invalid} non SSDV packets. ")
+                
+    print(f"\nFinished."
+          f"\n → {total_valid} valid SSDV packets. ({total_turbo} Turbo packets included)" 
+          f"\n + {total_invalid} broken SSDV packets."
+          f"\n + {total_nonssdv} non SSDV packets ({total_filter} filter out, {total_nonssdv-total_filter} SMS)"
+          f"\n = {total_all} TOTAL ALL packets."
+          f"\n → {total_recovered} FEC (Reed Solomon) Recovered SSDV packets.")
+          #f"\n → Deep Search found {total_deepsearch} SSDV images."
 
     if total_valid > 0:
-        print("\nFiles created in output/:")
+        print(f"\nFiles created in output/ ({len(images)} images):")
         for (call, img), frags in sorted(images.items()):
-            print(f"  {call}{img}  →  {len(frags)} fragments")
+            print(f"  {img}  →  {len(frags)} fragments")
 
 if __name__ == "__main__":
+    formatted_time = time.strftime("%Y-%m-%dT%H-%M-%S")
+    formatted_time_nosecond = time.strftime("%Y-%m-%dT%H-%M")
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, f"output/{formatted_time_nosecond}")
+    os.makedirs(f"{output_dir}/deep", exist_ok=True)
+    
+    # Open the log file
+    log_file = open(f"{output_dir}/log.txt", 'a')
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = Tee(original_stdout, log_file)
+    sys.stderr = Tee(original_stderr, log_file)
+    
     print(f"📺ssdv2sat v{VERSION}")
     config = configparser.ConfigParser()
     config.read('config.ini')
@@ -418,11 +862,24 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="store_true", help="Print hex of each received SSDV candidate + parsing details")
     parser.add_argument("-s", "--simple", action="store_true", help="Simple UIX with eye-catching progress bar for certain fragments")
     parser.add_argument("-nl", "--newline", action="store_true", help="Add newline at the end of every non SSDV text data")
-    parser.add_argument("-off", "--offset", type=int, default=OFFSET, help="experimental support for non standard SSDV")
+    #parser.add_argument("-d", "--deep", action="store_true", help="experimental for deep searching SSDV")
+    #parser.add_argument("--deeplength", type=int, default=DEEPLENGTH, help=f"SSDV packet length for deep searching. Default: {DEEPLENGTH}")
+    #parser.add_argument("--offset", type=int, default=OFFSET, help=f"experimental support for non standard SSDV. Default: {OFFSET}")
+    parser.add_argument("-o", "--onlyssdv", action="store_true", help="only print on screen SSDV packets")
+    parser.add_argument("-nf", "--nofilter", action="store_true", help="disable filter for non SSDV packets")
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
     args = parser.parse_args()
-
+    
+    args.output_dir  = output_dir 
+    '''
+    if not (64 <= args.deeplength <= 256):
+        print("Error: --deeplength should be between 64 and 256")
+        sys.exit(1)
+    '''
     try:
         main(args)
     except KeyboardInterrupt:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
         print("\nInterrupted.")
