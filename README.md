@@ -1,7 +1,7 @@
 # ssdv2sat
-send and receive image (support jpg, png, etc) from satellite using handheld radio FM. (take advantage of IL2P + Reed Solomon + SSDV)
+send and receive image (support jpg, png, etc) from satellite using handheld radio FM. (take advantage of Reed Solomon + SSDV, with/out IL2P)
 
-With this script you can create IL2P modulated WAV (baudrate 1200-9600) automaticaly from a picture/image file to be transmitted via a handheld FM radio, and vice versa. Example: send and receive SSDV JPEG image over analog IL2P 1200 modulation from terestrial or VR satellites
+With this script you can create modulated WAV (baudrate 1200-9600) automaticaly from a picture/image file to be transmitted via a handheld FM radio, and vice versa. Example: send and receive SSDV JPEG image over analog 1200/2400 modulation from terestrial or VR satellites
 
 ### Dependencies:
 Debian/Ubuntu Linux
@@ -9,9 +9,13 @@ Debian/Ubuntu Linux
 sudo apt update
 sudo apt install python3 sox git pavucontrol
 ```
-#### install latest Direwolf (IL2P support). 
+#### install latest Direwolf (for IL2P support). 
 look at [this link for details](https://github.com/wb2osz/direwolf)
 
+If you don't want to support IL2P, you can install the old direwolf from the Debian/Ubuntu repository:
+```bash
+sudo apt install direwolf
+```
 
 #### install latest SSDV. 
 look at [this link for details](https://github.com/fsphil/ssdv)
@@ -23,7 +27,7 @@ make
 sudo make install
 ```
 
-### Download the script:
+### Download the latest script:
 ```bash
 cd ~
 git clone https://github.com/hobisatelit/ssdv2sat.git && cd ssdv2sat
@@ -51,17 +55,22 @@ pavucontrol
 ```
 look at **Recording** tab, you will see **direwolf** app and **sox** there, please change capture to **MONITOR** mode both of them. and then you can close both app with press Ctrl+C on each terminal.
 
-### How to convert image or picture into WAV  
+### How to convert image and record WAV  
 Run Direwolf KISS server
 ```bash
 cd ~/ssdv2sat
 direwolf -c direwolf.conf
 ```
 on another terminal run below command. 
-note: replace ABCDEF with your CALLSIGN. replace image.jpg with your image file. Script support many picture format: JPEG, PNG, etc. check at audio folder to see the result.
+note: replace image.jpg with your image file. Script support many picture format: JPEG, PNG, etc. check at audio folder to see the result.
 ```bash
 cd ~/ssdv2sat
-./tx.py ABCDEF image.jpg
+./tx.py image.jpg
+```
+Or, if you only want to transmit directly without recording, you can use this command:
+```bash
+cd ~/ssdv2sat
+./tx.py image.jpg --norec
 ```
 
 ### How to convert WAV into picture
@@ -73,7 +82,7 @@ play your recorded wav file or directly stream from SDR app, and the **rx.py** s
 
 ### How to change  Dire Wolf baudrate
 edit direwolf.conf at same directory with script. 
-change MODEM 1200 to MODEM 2400, or MODEM 9600. higher baudrate, faster transmission. Please adjust according to your hardware support. Handheld FM ussualy support 1200 and 2400 only. 
+change MODEM 1200 to MODEM 2400, or MODEM 9600. higher baudrate, faster transmission. Please adjust according to your hardware support. Handheld FM ussualy support 1200 and 2400 only.
 
 ### How to run on Windows
 personally i never test it on Windows. but it should also work. Dire Wolf, ssdv and sox are available for Windows os. Please check config.ini to change the location of these apps.
