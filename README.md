@@ -7,7 +7,7 @@ With this script you can create modulated WAV (baudrate 1200-9600) automaticaly 
 Debian/Ubuntu Linux
 ```bash
 sudo apt update
-sudo apt install python3 sox git pavucontrol
+sudo apt install python3 python3-pil sox git pavucontrol
 ```
 #### install latest Direwolf (for IL2P support). 
 look at [this link for details](https://github.com/wb2osz/direwolf)
