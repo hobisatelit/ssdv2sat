@@ -2,10 +2,9 @@
 # Copyright 2026 hobisatelit
 # https://github.com/hobisatelit/ssdv2sat
 # License: GPL-3.0-or-later
-VERSION = '0.04'
+VERSION = '0.05'
 """
 Convert the image to a SSDV-compatible JPEG. By default, FEC (Reed-Solomon) is disabled.
-This is because we have configured direwolf.conf with IL2P, which enhances AX.25 using FEC
 
 Features:
 - Resize proportionally to fit within max_width × max_height
@@ -180,8 +179,6 @@ def main():
         if not ((MIN_SSDV_LENGTH + 32) <= args.length <= 256):
             print(f"Error: SSDV packet length must be between {MIN_SSDV_LENGTH + 32} and 256", file=sys.stderr)
             sys.exit(1)
-        
-
 
     os.makedirs(args.dir, exist_ok=True)
 
@@ -235,6 +232,16 @@ def main():
 
 
 if __name__ == "__main__":
+    # check file requirements
+    req_error = False
+    dep = ['config.ini']
+    for file in dep:
+        if not os.path.exists(file):
+            print(f" → Cannot find {file}", file=sys.stderr)
+            req_error = True
+    if req_error:        
+        sys.exit(1)
+        
     config = configparser.ConfigParser()
     config.read('config.ini')
     DEFAULT_APP_SSDV = config['app']['ssdv']
