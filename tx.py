@@ -7,7 +7,6 @@
 # SSDV with FEC = 53 bytes (header 15 byte + data 2 byte + crc 4 byte + reedsolomon 32 byte)
 # SSDV without FEC = 21 bytes (header 15 byte + data 2 byte + crc 4 byte)
 
-
 import socket
 import sys
 import time
@@ -15,20 +14,25 @@ import subprocess
 import signal
 import threading
 import os
+import re
 import hashlib
 import string
 import argparse
 import configparser
 import binascii
+from PIL import Image
+import shlex
+#from reedsolo import RSCodec
 
 DEFAULT_PACKET_LENGTH = 256
 DEFAULT_DELAY = 0
 DEFAULT_AUDIO_DIR = 'audio'
 DEFAULT_FEC = True
+DEFAULT_SAMPLE_RATE = 48000
 # minimum packet for SSDV without FEC / reed solomon. (in bytes)
 MIN_SSDV_LENGTH = 26
 ####################################
-VERSION = '0.04'
+VERSION = '0.05'
 
 if DEFAULT_FEC:
     DEFAULT_NOFEC = False
@@ -41,22 +45,54 @@ FEND = b'\xC0'
 FESC = b'\xDB'
 TFEND = b'\xDC'
 TFESC = b'\xDD'
+SPINNER = [
+    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
+    "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
+    "▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
+    "▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
+    "▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂",
+    "▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃",
+    "▃▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+    "▄▃▂▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+    "▅▄▃▂▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+    "▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅▄",
+    "▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅",
+    "█▇▆▅▄▃▂▁▁▁▂▃▄▅▆▇█▇",
+    "█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇▇",
+    "▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇",
+    "▆▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆",
+    "▅▆▇█▇▆▅▄▃▂▁▁▁▂▃▄▅▄",
+    "▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▃▂",
+    "▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▂▂",
+    "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▁▁",
+    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
+    ]
 
+def replace_na(input_string):
+    return re.sub(r'\W+', '_', input_string)
+    
 def show_progress(i, n, width=20):
     p = int(i) / int(n)
     bar = "█" * int(width * p) + "░" * (width - int(width * p))
     print(f"\r{bar} {p:5.1%} - Frags {i:4d}/{n}", end="")
 
-def crc32(filename):
+def crc32(filename, sms: bool = False):
     # result = 0 - 255
-    with open(filename, 'rb') as f:
-        file_data = f.read()
-        crc32_value = binascii.crc32(file_data) & 0xff
+    if not sms:
+        with open(filename, 'rb') as f:
+            file_data = f.read()
+    else:        
+        #file_data = filename.encode('utf-8').hex()
+        #file_data = bytes.fromhex(file_data)
+        file_data = filename.encode('utf-8')
+        
+    crc32_value = binascii.crc32(file_data) & 0xff
+
     return crc32_value
 
 def start_recording(output_filename):
   try:
-    command = [DEFAULT_APP_SOX, "-d", "-r", "44100", "-c", "1", "-t", "wav", "-q", "-V1", output_filename]
+    command = [DEFAULT_APP_SOX, "-d", "-r", f"{DEFAULT_SAMPLE_RATE}", "-c", "1", "-t", "wav", "-q", "-V1", output_filename]
     return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
   except FileNotFoundError:
     print(f"Error: {DEFAULT_APP_SOX} not found. Make sure its installed.\nCheck config.ini. Audio file not created..")
@@ -103,27 +139,50 @@ def ax25_address(call, last=False):
         ssid |= 1
     addr += bytes([ssid])
     return addr
+    
+class tee:
+    def __init__(self, *files, log_file=None):
+        self.files = files
+        self.log_file = log_file
+        
+    def write(self, obj):
+        for f in self.files:
+            if f == self.log_file:  
+                spinner_patterns = [char for char in SPINNER[0].strip()]
+                patterns = ['█', '░'] + spinner_patterns
+                
+                for pattern in patterns:
+                    obj = obj.replace(pattern, '')
+
+            f.write(obj)
+            f.flush()
+            
+    def flush(self):
+        for f in self.files:
+            f.flush()
 
 def main():
+    global DEFAULT_APP_SOX    
     parser = argparse.ArgumentParser(
         description="Convert an image into SSDV, transmit over AX25/IL2P using Dire Wolf KISS and record as audio wav",
         epilog="""Example:
         recommended:
-        ./tx.py input.jpg
+        ./%(prog)s input.jpg
         
         other:
-        ./tx.py input.jpg --quality 40 --max-size 800 600
-        ./tx.py input.jpg --norec
-        ./tx.py input.jpg --max 150 --no-fec
-        ./tx.py CALSIG input.jpg
-        ./tx.py input.jpg --sms "Hello World, message from space"
-        ./tx.py input.jpg --port 8100
-        ./tx.py CALSIG original.png --turbo --sms "Hello world! this is message from space!" --dest ISS 
+        ./%(prog)s input.jpg --quality 40 --max-size 800 600
+        ./%(prog)s input.jpg --norec
+        ./%(prog)s input.jpg --max 150 --no-fec
+        ./%(prog)s input.jpg --callsign CALSIG
+        ./%(prog)s input.jpg --sms "Hello World, message from space"
+        ./%(prog)s input.jpg --port 8100
+        ./%(prog)s --sms "Hello world!" --norec
+        ./%(prog)s input.jpg --callsign CALSIG --turbo --sms "Hello world! this is message from space!" --dest ISS 
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("callsign", nargs='?', help="your actual callsign", default="")
-    parser.add_argument("filename", help="input image file (JPG, PNG, etc)")
+    parser.add_argument("filename", nargs='?', help="input image file (JPG, PNG, TXT, etc)")
+    parser.add_argument("-cs", "--callsign", "--from", help="your actual callsign", default="")
     parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8001, help="Dire Wolf KISS TCP port (default: 8001)")
     parser.add_argument("--turbo", action="store_true", help="EXPERIMENTAL: Remove callsign and basic header. Make header shorter than normal. Make SSDV smaller and faster. If you don't provide a CALLSIGN, turbo mode will be enabled by default")
@@ -137,11 +196,12 @@ def main():
     parser.add_argument("--norec", action="store_true", help="No record WAV, tx only to Dire Wolf. Default: tx and record")                      
     parser.add_argument("--fec", action='store_true', default=DEFAULT_FEC, help=f"Encode SSDV packets with FEC (Reed Solomon). Default: {DEFAULT_FEC}") 
     parser.add_argument("--no-fec", action='store_false',default=DEFAULT_NOFEC, dest='fec', help=f"Encode SSDV packets without FEC (Reed Solomon). Default: {DEFAULT_NOFEC}") 
+    parser.add_argument("--nolog",  action="store_false", dest="log", default=True, help="disable log. (default: log enable)")
     parser.add_argument("--text", type=str, default='',
                         help="put small text in the top-left corner of the SSDV image") 
     parser.add_argument("--sms", type=str, default='',
                         help="send short message over APRS, prior sending SSDV") 
-    parser.add_argument("--dest", type=str, default='',
+    parser.add_argument("--dest", "--to", type=str, default='',
                         help="change the destination / sms receiver. default send to your callsigner") 
     parser.add_argument("--max-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=[320, 320],
@@ -151,6 +211,53 @@ def main():
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
 
     args = parser.parse_args()
+    
+    HOST = args.host
+    KISS_PORT = args.port
+    SRC_CALL = args.callsign
+    PACKET_LENGTH = args.max
+    FRAME_DELAY = args.delay
+    AUDIO_DIR = args.dir
+    filename = args.filename
+    FEC_SUFFIX = ''
+    ssdv = True
+
+    formatted_time = time.strftime("%Y-%m-%dT%H-%M-%S")
+    formatted_time_nosecond = time.strftime("%Y-%m-%d")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    AUDIO_DIR = os.path.join(script_dir, f"{AUDIO_DIR}/{formatted_time_nosecond}")
+    os.makedirs(AUDIO_DIR, exist_ok=True)
+
+    if args.log:
+        # Open the log file
+        log_file = open(f"{AUDIO_DIR}/log.txt", 'a')
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = tee(original_stdout, log_file, log_file=log_file)
+        sys.stderr = tee(original_stderr, log_file, log_file=log_file)
+        # log command
+        print("Log Command: " + shlex.join(sys.argv), file=sys.stderr)
+        
+    print(f"📺ssdv2sat v{VERSION}")
+    
+    # check file requirements
+    req_error = False
+    dep = ['config.ini', 'img2ssdv.py']
+    for file in dep:
+        if not os.path.exists(file):
+            print(f" → Cannot find {file}", file=sys.stderr)
+            req_error = True
+    if req_error:        
+        sys.exit(1)
+        
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    DEFAULT_APP_SOX = config['app']['sox']  
+    
+    if not args.filename and not args.sms:
+        print("error: the following arguments are required: filename")
+        print(f"example: ./{parser.prog} input.jpg")
+        sys.exit(1)
     
     max_w, max_h = args.max_size
     if max_w < 16 or max_h < 16:
@@ -173,16 +280,9 @@ def main():
     if args.delay < 0:
         print("Error: --delay cannot be negative")
         sys.exit(1)
-
-    HOST = args.host
-    KISS_PORT = args.port
-    SRC_CALL = args.callsign
-    PACKET_LENGTH = args.max
-    FRAME_DELAY = args.delay
-    AUDIO_DIR = args.dir
-    filename = args.filename
-    FEC_SUFFIX = ''
     
+    #placeholder
+        
     # if user not provide callsign, automatic change to turbo mode
     if not SRC_CALL:
         args.turbo = True
@@ -192,31 +292,80 @@ def main():
         #args.fec = False
         #SRC_CALL = ''
         FEC_SUFFIX += '_TURBO'
+    if filename:
+        filename = os.path.abspath(filename)
 
-    os.makedirs(AUDIO_DIR, exist_ok=True)
+        #if not os.path.exists(filename):
+        #    print(f"Error: File '{filename}' not found!")
+        #    sys.exit(1)
+            
+        #check file, is it image or not?
+        try:
+            img = Image.open(filename)
+            img.close()
+            pass            
+        except FileNotFoundError:
+            print(f"Error: File '{filename}' not found!", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            #print(f"Error: {str(e)}", file=sys.stderr)
+            # Ask user if they want to continue
+            response = input(f"You want transmit non image / non SSDV.\nContinue? (yes/no): ").strip().lower()
+                
+            if response in ['yes', 'y']:
+                ssdv = False
+                print("Continuing...")
+                pass
+            else:
+                print("Interrupted.")
+                sys.exit(0)
 
-    filename = os.path.abspath(filename)
-
-    if not os.path.exists(filename):
-        print(f"Error: File '{filename}' not found!")
-        sys.exit(1)
-
-    basename = os.path.basename(filename)
-    basename_noext = os.path.splitext(basename)[0]
-    
-    IMG_ID = crc32(filename)
+        basename = os.path.basename(filename)
+        basename_noext = os.path.splitext(basename)[0] + '_'            
+        IMG_ID = crc32(filename)
     
     if args.fec:
-        FEC_SUFFIX += "_FEC"
+        FEC_SUFFIX += '_FEC'
     else:
-        FEC_SUFFIX += "_NO-FEC"
+        FEC_SUFFIX += '_NO-FEC'
+        
+    if ssdv:
+        filetype_txt = 'IMG'
+        quality_txt = '_' + str(args.quality) + 'q'
+        NONSSDV_HEADER_LENGTH = 0
+    else:
+        if args.fec:
+            NONSSDV_HEADER_LENGTH = 45
+        else:
+            NONSSDV_HEADER_LENGTH = 13
+        FEC_SUFFIX += '_NON-SSDV'
+        filetype_txt = 'FILE'
+        quality_txt = ''
     
-    FILE_SUFFIX = f"{SRC_CALL}_IMG{IMG_ID}_{PACKET_LENGTH}b_{FRAME_DELAY}s_{args.quality}q{FEC_SUFFIX}"
+    if not filename and args.sms:
+        ssdv = False
+        # for sms only, without send ssdv
+        filetype_txt = 'SMS'
+        short_sms = replace_na(args.sms)
+        short_sms = short_sms.strip().lower()
+        short_sms = "_".join(short_sms.split()[:5])
+        short_sms = f"{crc32(args.sms, True)}_" + short_sms 
+        IMG_ID = short_sms
+        FILE_SUFFIX = f"{filetype_txt}{IMG_ID}"
+        basename = FILE_SUFFIX
+        basename_noext = ''
+    else:
+        FILE_SUFFIX = f"{filetype_txt}{IMG_ID}_{PACKET_LENGTH}b_{FRAME_DELAY}s{quality_txt}{FEC_SUFFIX}"
+        
+    if(args.dest):
+        FILE_SUFFIX = f"TO_{args.dest}_" + FILE_SUFFIX     
+    if(SRC_CALL):
+        FILE_SUFFIX = f"{SRC_CALL}_" + FILE_SUFFIX
     
-    output_wav = f"{basename_noext}_audio_{FILE_SUFFIX}.wav"
+    output_wav = f"{basename_noext}audio_{FILE_SUFFIX}.wav"
 
-    print(f"Image name        : {basename}")
-    print(f"IMG_ID            : {IMG_ID}")
+    print(f"{filetype_txt} name         : {basename}")
+    print(f"{filetype_txt}_ID           : {IMG_ID}")
     print(f"PACKET_LENGTH     : {PACKET_LENGTH} byte/frame")
     print(f"Frame delay       : {FRAME_DELAY} seconds")
     print(f"Audio output      : {output_wav}")
@@ -246,21 +395,29 @@ def main():
 
     # === Proceed ===
     print()
-    ssdv_process = img2ssdv(PACKET_LENGTH,AUDIO_DIR,filename,SRC_CALL,args.text,args.quality,args.max_size,FILE_SUFFIX,IMG_ID,args.fec)
-    print(ssdv_process)
-
-    if not os.path.exists(os.path.join(AUDIO_DIR, f"{basename_noext}_ssdv_{FILE_SUFFIX}.bin")):
-        print(f"\nError: SSDV .bin image not found.\nPlease check your config.ini")
-        sys.exit(1)
-
-    data = open(os.path.join(AUDIO_DIR, f"{basename_noext}_ssdv_{FILE_SUFFIX}.bin"), 'rb').read()
+    data = ''
+    if ssdv:
+        ssdv_process = img2ssdv(PACKET_LENGTH,AUDIO_DIR,filename,SRC_CALL,args.text,args.quality,args.max_size,FILE_SUFFIX,IMG_ID,args.fec)
+        print(ssdv_process)
+        if not os.path.exists(os.path.join(AUDIO_DIR, f"{basename_noext}ssdv_{FILE_SUFFIX}.bin")):
+            print(f"\nError: SSDV .bin image not found.\nPlease check your config.ini")
+            sys.exit(1)
+        data = open(os.path.join(AUDIO_DIR, f"{basename_noext}ssdv_{FILE_SUFFIX}.bin"), 'rb').read()
+    else:
+        print("This function not yet implemented. coming soon")
+        sys.exit(0)
+        #if filename:
+        #    data = open(filename, 'rb').read()
+        
     frame_num = 0
     offset = 0
     total_bytes = len(data)
     total_frames = (total_bytes + PACKET_LENGTH - 1) // PACKET_LENGTH
 
     src_addr = ax25_address(SRC_CALL)
-    dest_addr = ax25_address(str(hex(IMG_ID)[2:]) + str(hex(total_frames)[2:]), last=True)
+    
+    if filename:
+        dest_addr = ax25_address(str(hex(IMG_ID)[2:]) + str(hex(total_frames)[2:]), last=True)
     
     dest_sms = src_addr
     if args.dest:
@@ -287,18 +444,24 @@ def main():
         frame = dest_sms + src_addr + b'\x03\xf0' + payload
         kiss_sms = FEND + b'\x00' + kiss_escape(frame) + FEND
         send_number = 1
-        print(f"Sending {len(sms)} bytes SMS to Dire Wolf...\n")   
+
+        while send_number:
+            if send_number:
+                sock.sendall(kiss_sms)
+                print(f"{send_number} = Sending {len(sms)} bytes SMS to Dire Wolf...\n") 
+                send_number -= 1
 
     # reduce 6 bytes per ssdv fragments
     total_bytes_real = total_bytes
-    if args.turbo:
+    if filename and args.turbo:
         total_bytes_real = total_bytes - total_frames * 6
         print("TURBO MODE ENABLE...")
-          
-    print(f"Sending {total_bytes_real} bytes to Dire Wolf in ~{total_frames} fragments...\n")
+
+    if total_bytes:      
+        print(f"Sending {total_bytes_real} bytes {filetype_txt} to Dire Wolf in ~{total_frames} fragments...\n")
 
     while offset < total_bytes:
-        chunk_size = min(PACKET_LENGTH, total_bytes - offset)
+        chunk_size = min(PACKET_LENGTH - NONSSDV_HEADER_LENGTH, total_bytes - offset)
         chunk = data[offset:offset + chunk_size]
         offset += chunk_size
         
@@ -308,7 +471,7 @@ def main():
         #frame = dest_addr + src_addr + b'\x03\xf0' + payload
         # experimental - x03 = version 0.03:
         
-        if args.turbo:
+        if args.turbo and ssdv:
             payload = payload[6:]
             
         if args.ax25:
@@ -318,23 +481,20 @@ def main():
             
         kiss_frame = FEND + b'\x00' + kiss_escape(frame) + FEND
         
-        try:
-            if send_number:
-                sock.sendall(kiss_sms)
-                send_number -= 1
-                
+        try: 
             sock.sendall(kiss_frame)
             if total_frames > 1:
-                show_progress(frame_num, total_frames-1)
+                show_progress(frame_num + 1, total_frames)
+                
         except BrokenPipeError:
             print("\nError: Connection lost during transmission.")
             sock.close()
             stop_recording(wav_process)
-            sys.exit(1)
-            
+            sys.exit(1)  
         frame_num += 1
-        
         time.sleep(FRAME_DELAY)
+        
+
     sock.close()
     
     if args.norec:
@@ -342,37 +502,15 @@ def main():
         sys.exit(0)
     
     print()    
-    spinner = [
-    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁   ",
-    " ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁ ",
-    "  ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁ ",
-    "   ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
-    "▁   ▁▂▃▄▅▆▇█▇▆▅▄▃▂",
-    "▂▁   ▁▂▃▄▅▆▇█▇▆▅▄▃",
-    "▃▂▁   ▁▂▃▄▅▆▇█▇▆▅▄",
-    "▄▃▂▁  ▁▂▃▄▅▆▇█▇▆▅ ",
-    "▅▄▃▂▁ ▁▂▃▄▅▆▇█▇▆▅ ",
-    "▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅ ",
-    "▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆ ",
-    "█▇▆▅▄▃▂▁ ▁▂▃▄▅▆▇█ ",
-    "█▇▆▅▄▃▂▁▁ ▁▂▃▄▅▆▇ ",
-    "▇█▇▆▅▄▃▂▁  ▁▂▃▄▅▆▇",
-    "▆▇█▇▆▅▄▃▂▁  ▁▂▃▄▅▆",
-    "▅▆▇█▇▆▅▄▃▂▁ ▁▂▃▄▅▄",
-    "▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▃ ",
-    "▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▂ ",
-    "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▁ ",
-    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁  ",
-    ]
     
     if(wav_process):
         print("\nPress <CTRL+C> only after the sound ends, or the audio won't save completely")
-        #spinner = ['-', '\\', '|', '/']
+        #SPINNER = ['-', '\\', '|', '/']
         i = 0
         try:
             while True:
                     #sys.stdout.write(f"\r{frame:5d} {seconds} seconds")
-                    sys.stdout.write(f" {spinner[i % 20]} {(time.perf_counter() - start):.2f} seconds\r")
+                    sys.stdout.write(f" {SPINNER[i % 20]} {(time.perf_counter() - start):.2f} seconds\r")
                     sys.stdout.flush()
                     i += 1
                     time.sleep(0.07)
@@ -380,20 +518,15 @@ def main():
             print("\r  ")
                
         finally:
-            print(" → WAIT! DONT PRESS ANYKEY!..")   
+            print(" → PLEASE WAIT! DONT PRESS ANYKEY!..")   
             time.sleep(3)
             stop_recording(wav_process)
             if os.path.exists(os.path.join(AUDIO_DIR, output_wav)):
                 size_mb = os.path.getsize(os.path.join(AUDIO_DIR, output_wav)) / (1024 * 1024)
-                print(f"\nWAV file saved to:\n{output_wav} ({size_mb:.2f} MB)")
+                print(f"\nWAV file saved as:\n{output_wav} ({size_mb:.2f} MB)")
                 print(f"\nReady for playback over radio. 73!")
 
 if __name__ == "__main__":
-    print(f"📺ssdv2sat v{VERSION}")
-    
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    DEFAULT_APP_SOX = config['app']['sox']
     try:
         main()
     except KeyboardInterrupt:
