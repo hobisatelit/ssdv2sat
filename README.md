@@ -105,8 +105,10 @@ recommended:
 # send short message (sms) to ISS, with message Hello World
 ./tx.py mario-poster.jpg --callsign MARIO --host 192.168.10.1 --port 8080 --max 195 --delay 1 --dir recording --sms "Hello world! this is message from space!" --dest ISS
 
-#send sms:
+# send sms:
 ./tx.py --sms "Hello world!" --from MARIO --to LUIGI
-```
-#send sms and ssdv:
+
+# send sms and ssdv:
 ./tx.py mario-poster.jpg --from MARIO --to LUIGI --sms "GOOD MORNING!"
+```
+
