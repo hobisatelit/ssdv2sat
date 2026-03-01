@@ -404,10 +404,11 @@ def main():
             sys.exit(1)
         data = open(os.path.join(AUDIO_DIR, f"{basename_noext}ssdv_{FILE_SUFFIX}.bin"), 'rb').read()
     else:
-        print("This function not yet implemented. coming soon")
-        sys.exit(0)
-        #if filename:
-        #    data = open(filename, 'rb').read()
+        if not args.sms:
+            print("This function not yet implemented. coming soon")
+            sys.exit(0)
+            #if filename:
+            #    data = open(filename, 'rb').read()
         
     frame_num = 0
     offset = 0
