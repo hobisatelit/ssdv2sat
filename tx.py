@@ -29,6 +29,8 @@ DEFAULT_DELAY = 0
 DEFAULT_AUDIO_DIR = 'audio'
 DEFAULT_FEC = True
 DEFAULT_SAMPLE_RATE = 48000
+DEFAULT_MAX_WIDTH = 240
+DEFAULT_MAX_HEIGHT = 240
 # minimum packet for SSDV without FEC / reed solomon. (in bytes)
 MIN_SSDV_LENGTH = 26
 ####################################
@@ -204,8 +206,8 @@ def main():
     parser.add_argument("--dest", "--to", type=str, default='',
                         help="change the destination / sms receiver. default send to your callsigner") 
     parser.add_argument("--max-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
-                        default=[320, 320],
-                        help="Max width and height in pixels (default: 320 320)")
+                        default=[int(DEFAULT_MAX_WIDTH), int(DEFAULT_MAX_HEIGHT)],
+                        help=f"Max width and height in pixels (default: {DEFAULT_MAX_WIDTH} {DEFAULT_MAX_HEIGHT})")
     parser.add_argument("--dir", type=str, default=DEFAULT_AUDIO_DIR,
                         help=f"Directory for save recorded audio wav (default: {DEFAULT_AUDIO_DIR})")
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
@@ -346,9 +348,9 @@ def main():
         ssdv = False
         # for sms only, without send ssdv
         filetype_txt = 'SMS'
-        short_sms = replace_na(args.sms)
-        short_sms = short_sms.strip().lower()
+        short_sms = args.sms.strip().lower()
         short_sms = "_".join(short_sms.split()[:5])
+        short_sms = replace_na(short_sms)
         short_sms = f"{crc32(args.sms, True)}_" + short_sms 
         IMG_ID = short_sms
         FILE_SUFFIX = f"{filetype_txt}{IMG_ID}"
