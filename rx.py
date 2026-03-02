@@ -449,6 +449,7 @@ def main(args):
                                 ssdv_result = ''
                                 turbo_text = ''
                                 recovered_text = ''
+                                packets = [b'\x00',b'\x00']
                                 
                                 #discover and keep ssdv with normal header first
                                 if discover:
@@ -470,16 +471,27 @@ def main(args):
                                         if args.verbose:
                                             print()
                                             print(f"ATTEMPT 1 ({header.hex()}): TURBO HEADER RECOVERING.. :")
-                    
-                                        packet = b'\x55' + header + b'\x00\x00\x00\x00' + payload
-                                        ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+                                                  
+                                        packets[0] = b'\x55' + header + b'\x00\x00\x00\x00' + payload
+                                        packets[1] = b'\x55' + header + payload
+                                        
+                                        for ids, packet in enumerate(packets):
+                                            ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+                                            if ssdv_result:
+                                                print("signx")
+                                                break
+                                            if args.verbose:
+                                                print(f"Step {ids}")                                                
 
                                         if ssdv_result:
                                             if ssdv_result['crc32']:
                                                 total_turbo += 1
                                                 if args.verbose:
                                                     print(f" → RECOVERED 1! {len(payload)} → padded to {len(packet)} bytes")
-                                                turbo_text = '(Full Turbo)'                                                    
+                                                if packets[0]:
+                                                    turbo_text = '(Full Turbo)'
+                                                else:
+                                                    turbo_text = '(Half Turbo)'
                                                 payload = packet
                                                 ssdv_bypass_len = len(payload)
                                                 position = 0
@@ -499,16 +511,27 @@ def main(args):
                                             # this when user tx with option --turbo and --ax25. in turbo mode callsign only put in ax25 frame, not send in ssdv header
                                             print()
                                             print(f"ATTEMPT 1 ({header.hex()}): TURBO HEADER RECOVERING + AX25.. :")
-                    
-                                        packet = b'\x55' + header + b'\x00\x00\x00\x00' + payload[16:]
-                                        ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+
+                                        packets[0] = b'\x55' + header + b'\x00\x00\x00\x00' + payload[16:]
+                                        packets[1] = b'\x55' + header + payload[16:]
+                                        
+                                        for ids, packet in enumerate(packets):
+                                            ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
+                                            if ssdv_result:
+                                                print("signx")
+                                                break
+                                            if args.verbose:
+                                                print(f"Step {ids}")  
 
                                         if ssdv_result:
                                             if ssdv_result['crc32']:
                                                 total_turbo += 1
                                                 if args.verbose:
                                                     print(f" → RECOVERED 1! {len(payload)} → padded to {len(packet)} bytes")
-                                                turbo_text = '(Turbo + AX25)'                                                    
+                                                if packets[0]:
+                                                    turbo_text = '(Full Turbo + AX25)'
+                                                else:
+                                                    turbo_text = '(Semi Turbo + AX25)'                                                 
                                                 payload = payload[0:16] + packet
                                                 ssdv_bypass_len = len(packet)
                                                 position = 16
