@@ -85,7 +85,7 @@ edit direwolf.conf at same directory with script.
 change MODEM 1200 to MODEM 2400, or MODEM 9600. higher baudrate, faster transmission. Please adjust according to your hardware support. Handheld FM ussualy support 1200 and 2400 only.
 
 ### How to run on Windows
-personally i never test it on Windows. but it should also work. Dire Wolf, ssdv and sox are available for Windows os. Please check config.ini to change the location of these apps.
+personally i never test it on Microslop Windows. but it should also work. Dire Wolf, ssdv and sox are available for Microslop Windows os. Please check config.ini to change the location of these apps.
 
 ### Another advanced command
 ```bash
