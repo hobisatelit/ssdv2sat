@@ -10,6 +10,8 @@
 
 # This script connects to a Dire Wolf KISS TCP server (port 8001 by default)
 # and extracts SSDV packets from payloads (IL2P or non IL2P)
+# This script also support for another KISS TCP server like SoundModem 
+# (you must add option --port 8100 when running the script)
 #
 # Payload structure from Dire Wolf KISS:
 #   bytes 0–15:   AX25 header (used as image fingerprint / unique id)
@@ -38,7 +40,7 @@
 #   offset 15–219  : image data (205 bytes)
 #   offset 220-223 : crc32 (4 bytes)
 #   offset 224-255 : fec reed-solomon (32 bytes)
-VERSION = '0.05'
+VERSION = '0.06'
 
 import socket
 import argparse
@@ -77,6 +79,7 @@ RESET = "\033[0m"  # Reset to default colors
 
 def highlight(input_string):
     value = f"{YELLOW}{BLACK_BACKGROUND}{input_string}{RESET}" 
+    #value = input_string
     return value
 
 def replace_na(input_string):
@@ -368,7 +371,7 @@ class tee:
     
 def main(args):   
     output_dir = args.output_dir         
-    print(f"Connecting to Dire Wolf KISS TCP at {args.host}:{args.port} ...")
+    print(f"Connecting to KISS SERVER (Dire Wolf / SoundModem) at {args.host}:{args.port} ...")
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((args.host, args.port))
@@ -478,7 +481,7 @@ def main(args):
                                         for ids, packet in enumerate(packets):
                                             ssdv_result = parse_ssdv_packet_deep(packet, args.verbose)
                                             if ssdv_result:
-                                                print("signx")
+                                                #print("signx")
                                                 break
                                             if args.verbose:
                                                 print(f"Step {ids}")                                                
@@ -847,6 +850,16 @@ def main(args):
                                         discover = [i for pattern in patterns 
                                                     for i in range(len(payload) - len(pattern) + 1)
                                                     if payload[i:i+len(pattern)] == pattern]
+                                                    
+                                                    
+                                        # 00000800450000            
+                                        silversat = [
+                                            b'\x00\x00\x08\x00\x45\x00\x00' 
+                                        ]
+
+                                        silversat_tele = [i for pattern in silversat 
+                                                    for i in range(len(payload) - len(pattern) + 1)
+                                                    if payload[i:i+len(pattern)] == pattern] 
                                         '''
                                         if discover:
                                             print(payload.hex())
@@ -854,6 +867,20 @@ def main(args):
                                         '''
                                         if src_call.count('_') + file_id.count('_') <= 1 and ((len(src_call) >=3 and len(file_id) >=3) or (not src_call and not file_id) or (not src_call and file_id)):
                                             ssdv_part = payload[16:]
+                                            
+                                            if silversat_tele:
+                                                if b'\xa8\x64\x65\x84' in ssdv_part:
+                                                    '''
+                                                    ssdv_part = "xx|"
+                                                    ssdv_part = ssdv_part.encode('utf-8').hex()
+                                                    ssdv_part = bytes.fromhex(ssdv_part)
+                                                    '''
+                                                    ssdv_part = ssdv_part[55:]
+                                                    silversat_tele_payload = True
+                                                else:
+                                                    ssdv_part = ssdv_part[55:]
+                                                    silversat_tele_payload = False
+       
                                             process_nonssdv = True
                                         elif discover:
                                             ssdv_part = payload
@@ -867,11 +894,15 @@ def main(args):
                                     if process_nonssdv and ssdv_len:
                                         text = ''
                                         # option: ignore / replace / backslashreplace / strict
-                                        text = ssdv_part.decode('UTF-8', errors='ignore')
+                                        text = ssdv_part.decode('UTF-8', errors='replace')
 
                                         # Keep ASCII [^ -~] AND emojis, remove everything else
-                                        cleaned_text = re.sub(r'[^ -~\U0001F300-\U0001F9FF]+', '', text)
-                                        cleaned_text = cleaned_text.replace('\n', '').replace('\r', '')
+                                        if silversat_tele:
+                                            cleaned_text = text
+                                        else:
+                                            cleaned_text = re.sub(r'[^ -~\U0001F300-\U0001F9FF]+', '', text)
+                                            cleaned_text = cleaned_text.replace('\n', '').replace('\r', '')
+                                        
 
                                         if not args.onlyssdv:
                                             if progress:
@@ -879,8 +910,16 @@ def main(args):
                                                 progress = False
                                                 
                                             if cleaned_text:
-                                                highlight_text = highlight(cleaned_text)    
-                                                print(f" → {src_call:<7} | {file_id:<18} | OTHER # {total_nonssdv:4d} | {highlight_text}")
+                                                highlight_text = highlight(cleaned_text) 
+                                                if silversat_tele:
+                                                    if silversat_tele_payload:
+                                                        #print(ssdv_part.hex(), end="")
+                                                        print(cleaned_text, end="")
+                                                    else:
+                                                        print(f"{highlight_text}", end="")
+                                                        
+                                                else:
+                                                    print(f" → {src_call:<7} | {file_id:<18} | OTHER # {total_nonssdv:4d} | {highlight_text}")
                                                 temp = file_id
                                                 total_sms += 1
                 
@@ -958,10 +997,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Dire Wolf KISS TCP → SSDV → sorted .bin files → JPEG image"
+        description="KISS TCP SERVER → SSDV → sorted .bin files → JPEG image"
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8001, help="Dire Wolf KISS TCP port (default: 8001)")
+    parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf / KISS server host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8001, help="Dire Wolf / KISS TCP port (default: 8001)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print hex of each received SSDV candidate + parsing details")
     parser.add_argument("-s", "--simple", action="store_true", help="Simple UIX with eye-catching progress bar for certain fragments")
     #parser.add_argument("-d", "--deep", action="store_true", help="experimental for deep searching SSDV")
@@ -1001,20 +1040,21 @@ if __name__ == "__main__":
 
     print(f"📺 ssdv2sat v{VERSION}")
     
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback='/usr/bin/ssdv')
+
     # check file requirements
     req_error = False
-    dep = ['config.ini']
+    dep = ['config.ini', DEFAULT_APP_SSDV]
     for file in dep:
         if not os.path.exists(file):
             print(f" → Cannot find {file}", file=sys.stderr)
             req_error = True
-    if req_error:        
+    if req_error: 
+        print(f" → Please check your config.ini ..")       
         sys.exit(1)
 
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    DEFAULT_APP_SSDV = config['app']['ssdv']
-    
     try:
         main(args)
     except KeyboardInterrupt:
