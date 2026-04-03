@@ -34,7 +34,7 @@ DEFAULT_MAX_HEIGHT = 240
 # minimum packet for SSDV without FEC / reed solomon. (in bytes)
 MIN_SSDV_LENGTH = 26
 ####################################
-VERSION = '0.05'
+VERSION = '0.06'
 
 if DEFAULT_FEC:
     DEFAULT_NOFEC = False
@@ -166,7 +166,7 @@ class tee:
 def main():
     global DEFAULT_APP_SOX    
     parser = argparse.ArgumentParser(
-        description="Convert an image into SSDV, transmit over AX25/IL2P using Dire Wolf KISS and record as audio wav",
+        description="Convert an image into SSDV, transmit over AX25/IL2P/etc using Dire Wolf / SoundModem / KISS server and record as audio wav",
         epilog="""Example:
         recommended:
         ./%(prog)s input.jpg
@@ -185,8 +185,8 @@ def main():
     )
     parser.add_argument("filename", nargs='?', help="input image file (JPG, PNG, TXT, etc)")
     parser.add_argument("-cs", "--callsign", "--from", help="your actual callsign", default="")
-    parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8001, help="Dire Wolf KISS TCP port (default: 8001)")
+    parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf / KISS host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8001, help="Dire Wolf / KISS TCP port (default: 8001)")
     parser.add_argument("--turbo", action="store_true", help="EXPERIMENTAL: Remove callsign and basic header. Make header shorter than normal. Make SSDV smaller and faster. If you don't provide a CALLSIGN, turbo mode will be enabled by default")
     parser.add_argument("--ax25", action="store_true", help="Add AX25 frame that contain CALLSIGN, DEST header, total frame and other info. Make header bigger. Default: disable")
     parser.add_argument("--max", type=int, default=DEFAULT_PACKET_LENGTH,
@@ -241,20 +241,23 @@ def main():
         print("Log Command: " + shlex.join(sys.argv), file=sys.stderr)
         
     print(f"📺ssdv2sat v{VERSION}")
-    
-    # check file requirements
     req_error = False
-    dep = ['config.ini', 'img2ssdv.py']
+
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    DEFAULT_APP_SOX = config.get('app', 'sox', fallback='/usr/bin/sox')
+    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback='/usr/bin/ssdv')
+    
+    # check file requirements 
+    dep = ['config.ini', 'img2ssdv.py', DEFAULT_APP_SOX, DEFAULT_APP_SSDV]
     for file in dep:
         if not os.path.exists(file):
             print(f" → Cannot find {file}", file=sys.stderr)
             req_error = True
-    if req_error:        
+    if req_error: 
+        print(f" → Please check your config.ini ..")   
         sys.exit(1)
         
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    DEFAULT_APP_SOX = config['app']['sox']  
     
     if not args.filename and not args.sms:
         print("error: the following arguments are required: filename")
@@ -375,7 +378,7 @@ def main():
     print(f"KISS target       : {HOST}:{KISS_PORT}\n")
 
     # === KISS CONNECTION CHECK ===
-    print("Checking KISS connection to Dire Wolf...", end=" ")
+    print("Checking connection to KISS Server ..", end=" ")
     sys.stdout.flush()
     sock = None
     try:
@@ -521,7 +524,7 @@ def main():
             print("\r  ")
                
         finally:
-            print(" → PLEASE WAIT! DONT PRESS ANYKEY!..")   
+            print(" → PLEASE WAIT! DONT PRESS ANY KEY!..")   
             time.sleep(3)
             stop_recording(wav_process)
             if os.path.exists(os.path.join(AUDIO_DIR, output_wav)):
