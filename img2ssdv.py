@@ -2,7 +2,7 @@
 # Copyright 2026 hobisatelit
 # https://github.com/hobisatelit/ssdv2sat
 # License: GPL-3.0-or-later
-VERSION = '0.05'
+VERSION = '0.06'
 """
 Convert the image to a SSDV-compatible JPEG. By default, FEC (Reed-Solomon) is disabled.
 
@@ -232,17 +232,21 @@ def main():
 
 
 if __name__ == "__main__":
+    print(f"📺ssdv2sat v{VERSION}")
     # check file requirements
     req_error = False
-    dep = ['config.ini']
+    
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback='/usr/bin/ssdv')
+    
+    dep = ['config.ini', DEFAULT_APP_SSDV]
     for file in dep:
         if not os.path.exists(file):
             print(f" → Cannot find {file}", file=sys.stderr)
             req_error = True
-    if req_error:        
+    if req_error: 
+        print(f" → Please check your config.ini ..")       
         sys.exit(1)
-        
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    DEFAULT_APP_SSDV = config['app']['ssdv']
+    
     main()
