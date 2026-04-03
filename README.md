@@ -60,6 +60,12 @@ Run Direwolf KISS server
 ```bash
 cd ~/ssdv2sat
 direwolf -c direwolf.conf
+or
+(for lapan-a2 / io86 satellite)
+direwolf -c lapan-a2.conf
+or
+(for SilverSat)
+direwolf -c silversat.conf
 ```
 on another terminal run below command. 
 note: replace image.jpg with your image file. Script support many picture format: JPEG, PNG, etc. check at audio folder to see the result.
@@ -111,4 +117,15 @@ recommended:
 # send sms and ssdv:
 ./tx.py mario-poster.jpg --from MARIO --to LUIGI --sms "GOOD MORNING!"
 ```
-
+### Decoding using SoundModem
+for example decoding SSDV payload from HADES-SA satellite, Dire Wolf not yet support. So you can use SoundModem by UZ7HO (running flawless in linux using wine). 
+Just add option --port 8100 when running tx.py or rx.py
+Example:
+```bash
+cd ~/ssdv2sat
+./rx.py --port 8100
+```
+```bash
+cd ~/ssdv2sat
+./tx.py --port 8100 input.jpg
+```
