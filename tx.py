@@ -133,11 +133,13 @@ def kiss_escape(data):
     data = data.replace(FEND, FESC + TFEND)
     return data
 
+#src_addr = true | dest_addr = false | make correct ax25
 def ax25_address(call, last=False):
     call_padded = call.ljust(6).upper()[:6] + " "
     addr = bytes([ord(c) << 1 for c in call_padded[:6]])
-    ssid = (ord(call_padded[6]) << 1) | 0x60
+    ssid = (ord(call_padded[6]) << 1)
     if last:
+        ssid |= 0x80 
         ssid |= 1
     addr += bytes([ssid])
     return addr
@@ -420,12 +422,12 @@ def main():
     total_bytes = len(data)
     total_frames = (total_bytes + PACKET_LENGTH - 1) // PACKET_LENGTH
 
-    src_addr = ax25_address(SRC_CALL)
+    src_addr = ax25_address(SRC_CALL, last=True)
     
     if filename:
-        dest_addr = ax25_address(str(hex(IMG_ID)[2:]) + str(hex(total_frames)[2:]), last=True)
+        dest_addr = ax25_address(str(hex(IMG_ID)[2:]) + str(hex(total_frames)[2:]), last=False)
     
-    dest_sms = src_addr
+    dest_sms = ax25_address(SRC_CALL)
     if args.dest:
         dest_sms = ax25_address(args.dest)
     
@@ -447,7 +449,8 @@ def main():
         sms = args.sms
         smshex = sms.encode('utf-8').hex()
         payload = bytes.fromhex(smshex)
-        frame = dest_sms + src_addr + b'\x03\xf0' + payload
+        #PID 0xcf
+        frame = dest_sms + src_addr + b'\x03\xcf' + payload
         kiss_sms = FEND + b'\x00' + kiss_escape(frame) + FEND
         send_number = 1
 
