@@ -2,7 +2,7 @@
 # Copyright 2026 hobisatelit
 # https://github.com/hobisatelit/ssdv2sat
 # License: GPL-3.0-or-later
-VERSION = '0.06'
+VERSION = '0.07'
 """
 Convert the image to a SSDV-compatible JPEG. By default, FEC (Reed-Solomon) is disabled.
 
@@ -146,6 +146,8 @@ def main():
     
     args = parser.parse_args()
 
+    print(f"ssdv2sat v{VERSION}")
+    
     args.input = os.path.abspath(args.input)
     basename = os.path.basename(args.input)
     basename_noext = os.path.splitext(basename)[0]
@@ -201,7 +203,7 @@ def main():
                 os.path.join(args.dir, small_output_filename),
                 format="JPEG",
                 quality=args.quality,
-                subsampling=0,           # 0 → 4:2:0 chroma subsampling (standard for SSDV)
+                subsampling=0,           # 0 + 4:2:0 chroma subsampling (standard for SSDV)
                 optimize=True,           # Optimize Huffman tables
                 progressive=False,       # Baseline JPEG only (no progressive)
                 exif=b"",                # Strip all EXIF
@@ -212,41 +214,44 @@ def main():
             #ssdv auto encode
             ssdv_process = ssdv_encoding(args.length,os.path.join(args.dir, small_output_filename),os.path.join(args.dir,ssdv_output_filename),args.callsign,args.quality,args.imgid,args.fec)
 
-            print(f"\nJPEG Optimization → {small_output_filename}")
-            print(f"Resized to   : {im_resized.size[0]}×{im_resized.size[1]} (multiple of 16, aspect preserved)")
+            print(f"\nJPEG Optimization = {small_output_filename}")
+            print(f"Resized to   : {im_resized.size[0]}x{im_resized.size[1]} (multiple of 16, aspect preserved)")
             print(f"Quality      : {args.quality}")
             print(f"Subsampling  : 4:2:0")
             print(f"Progressive  : disabled")
             print(f"Metadata     : fully stripped")
-            print(f"\nSSDV Encoding → {ssdv_output_filename}")
+            print(f"\nSSDV Encoding = {ssdv_output_filename}")
             print(f"PacketLength : {args.length} bytes")
             print(ssdv_process)
             print(f"FEC (ReedSolomon): {args.fec}")
 
     except FileNotFoundError:
-        print(f"Error: Input file not found → {args.input}", file=sys.stderr)
+        print(f"Error: Input file not found + {args.input}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"Error: {str(e)}", file=sys.stderr)
         sys.exit(1)
 
 
-if __name__ == "__main__":
-    print(f"📺ssdv2sat v{VERSION}")
+if __name__ == "__main__":      
     # check file requirements
     req_error = False
     
     config = configparser.ConfigParser()
     config.read('config.ini')
-    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback='/usr/bin/ssdv')
     
-    dep = ['config.ini', DEFAULT_APP_SSDV]
+    DEFAULT_APP_SSDV = '/usr/bin/ssdv'
+    if sys.platform == 'win32':
+        DEFAULT_APP_SSDV = 'ssdv.exe'
+        
+    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback=DEFAULT_APP_SSDV)
+    
+    dep = [DEFAULT_APP_SSDV]
     for file in dep:
         if not os.path.exists(file):
-            print(f" → Cannot find {file}", file=sys.stderr)
+            print(f" + Cannot find {file}", file=sys.stderr)
             req_error = True
-    if req_error: 
-        print(f" → Please check your config.ini ..")       
+    if req_error:       
         sys.exit(1)
     
     main()
