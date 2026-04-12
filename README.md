@@ -94,9 +94,9 @@ change MODEM 1200 to MODEM 2400, or MODEM 9600. higher baudrate, faster transmis
 now you can run it on microslop windows. since v0.07, you can download the standalone app for windows on this page. please check the release page. you can also build and compile it yourself using PyInstaller. just clone the source code and run this command from your windows command prompt (you must have python installed first):
 ```bash
 pip install pyinstaller
-pyinstaller --clean --onefile --optimize 1 rx.py
-pyinstaller --clean --onefile --optimize 1 tx.py
-pyinstaller --clean --onefile --optimize 1 img2ssdv.py
+pyinstaller --clean --onefile rx.py
+pyinstaller --clean --onefile tx.py
+pyinstaller --clean --onefile img2ssdv.py
 ```
 this command will create .exe app on dist/ folder. 
 
