@@ -24,6 +24,9 @@ from PIL import Image
 import shlex
 #from reedsolo import RSCodec
 
+if sys.platform == 'win32':
+    import sounddevice as sd
+
 DEFAULT_PACKET_LENGTH = 256
 DEFAULT_DELAY = 0
 DEFAULT_AUDIO_DIR = 'audio'
@@ -34,7 +37,7 @@ DEFAULT_MAX_HEIGHT = 240
 # minimum packet for SSDV without FEC / reed solomon. (in bytes)
 MIN_SSDV_LENGTH = 26
 ####################################
-VERSION = '0.06'
+VERSION = '0.07'
 
 if DEFAULT_FEC:
     DEFAULT_NOFEC = False
@@ -47,28 +50,39 @@ FEND = b'\xC0'
 FESC = b'\xDB'
 TFEND = b'\xDC'
 TFESC = b'\xDD'
-SPINNER = [
-    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
-    "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
-    "▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
-    "▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
-    "▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂",
-    "▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃",
-    "▃▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
-    "▄▃▂▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
-    "▅▄▃▂▁▁▁▂▃▄▅▆▇█▇▆▅▄",
-    "▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅▄",
-    "▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅",
-    "█▇▆▅▄▃▂▁▁▁▂▃▄▅▆▇█▇",
-    "█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇▇",
-    "▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇",
-    "▆▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆",
-    "▅▆▇█▇▆▅▄▃▂▁▁▁▂▃▄▅▄",
-    "▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▃▂",
-    "▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▂▂",
-    "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▁▁",
-    "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
+
+if sys.platform == 'win32':
+    # Windows: Use ASCII spinner
+    SPINNER = [
+        "|",
+        "/",
+        "-",
+        "\\",
     ]
+else:
+    SPINNER = [
+        "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
+        "▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁",
+        "▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁",
+        "▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁",
+        "▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃▂",
+        "▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄▃",
+        "▃▂▁▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+        "▄▃▂▁▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+        "▅▄▃▂▁▁▁▂▃▄▅▆▇█▇▆▅▄",
+        "▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅▄",
+        "▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅",
+        "█▇▆▅▄▃▂▁▁▁▂▃▄▅▆▇█▇",
+        "█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇▇",
+        "▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆▇",
+        "▆▇█▇▆▅▄▃▂▁▁▁▁▂▃▄▅▆",
+        "▅▆▇█▇▆▅▄▃▂▁▁▁▂▃▄▅▄",
+        "▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▃▂",
+        "▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▂▂",
+        "▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▁▁",
+        "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▁▁",
+        ]
+
 
 def replace_na(input_string):
     return re.sub(r'\W+', '_', input_string)
@@ -94,8 +108,41 @@ def crc32(filename, sms: bool = False):
 
 def start_recording(output_filename):
   try:
-    command = [DEFAULT_APP_SOX, "-d", "-r", f"{DEFAULT_SAMPLE_RATE}", "-c", "1", "-t", "wav", "-q", "-V1", output_filename]
-    return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+    if sys.platform == 'win32':
+        # Windows
+        command = [DEFAULT_APP_SOX, "-t", "waveaudio", f"{DEFAULT_APP_SOX_DEVICE_WIN}", "-r", f"{DEFAULT_SAMPLE_RATE}", "-c", "1", "-t", "wav", "-q", "-V1", output_filename]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            #stdout=subprocess.PIPE,
+            #stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        # Linux
+        command = [DEFAULT_APP_SOX, "-d", "-r", f"{DEFAULT_SAMPLE_RATE}", "-c", "1", "-t", "wav", "-q", "-V1", output_filename]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            #stdout=subprocess.PIPE,
+            #stderr=subprocess.PIPE,
+            preexec_fn=os.setsid
+        )
+    #stdout, stderr = process.communicate()
+    #print(f"command = {command}")
+    #print(f"STDOUT: {stdout}")
+    #print(f"STDERR: {stderr}")
+    #print(f"Return code: {process.returncode}")
+    #time.sleep(1)
+    '''
+    if stderr:
+        print(stderr.decode('utf-8', errors='replace').strip())
+        return None
+    else:
+    '''
+    return process
   except FileNotFoundError:
     print(f"Error: {DEFAULT_APP_SOX} not found. Make sure its installed.\nCheck config.ini. Audio file not created..")
     return None
@@ -106,21 +153,30 @@ def start_recording(output_filename):
     
 def img2ssdv(packet_length,output_dir,input_filename,callsign,text,quality,max_size,filesuffix,imgid,fec):
   try:
-    max_w, max_h = max_size
-    if fec:
-        command = [os.path.join(os.getcwd(),"img2ssdv.py"), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--fec"]
-    else:
-        command = [os.path.join(os.getcwd(),"img2ssdv.py"), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--no-fec"]
+    max_w, max_h = max_size              
     
+    if fec:
+        command = [os.path.join(os.getcwd(), DEFAULT_APP_IMG2SSDV), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--fec"]
+    else:
+        command = [os.path.join(os.getcwd(), DEFAULT_APP_IMG2SSDV), "--length", str(packet_length), "--dir", str(output_dir), "--callsign", str(callsign),  input_filename, "--text", str(text), "--quality", str(quality), "--max-size", str(max_w), str(max_h), "--suffix", filesuffix, "--imgid", str(imgid), "--no-fec"]
+
+    #print(f"command = {command}")
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # waiting until app finish 
     stdout, stderr = process.communicate()
-    return stdout.decode().strip()
+
+    #print(f"STDOUT: {stdout}")
+    #print(f"STDERR: {stderr}")
+    #print(f"Return code: {process.returncode}")
+    #print("-- execute ssdv.exe --")
+    #time.sleep(1)
+
+    return stdout.decode('utf-8', errors='replace').strip()
   except FileNotFoundError:
-    print(f"\nError: img2ssdv.py not found. SSDV image not created..")
+    print(f"\nError: {DEFAULT_APP_IMG2SSDV} not found. SSDV image not created..")
     return None
   except subprocess.CalledProcessError as e:
-    print(f"An error occurred while running img2ssdv.py: {e}")
+    print(f"An error occurred while running {DEFAULT_APP_IMG2SSDV}: {e}")
     return None
 
 def stop_recording(process):
@@ -166,7 +222,8 @@ class tee:
             f.flush()
 
 def main():
-    global DEFAULT_APP_SOX    
+    global DEFAULT_APP_SOX, DEFAULT_APP_SOX_DEVICE_WIN, DEFAULT_APP_IMG2SSDV
+       
     parser = argparse.ArgumentParser(
         description="Convert an image into SSDV, transmit over AX25/IL2P/etc using Dire Wolf / SoundModem / KISS server and record as audio wav",
         epilog="""Example:
@@ -185,6 +242,7 @@ def main():
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    
     parser.add_argument("filename", nargs='?', help="input image file (JPG, PNG, TXT, etc)")
     parser.add_argument("-cs", "--callsign", "--from", help="your actual callsign", default="")
     parser.add_argument("--host", default="127.0.0.1", help="Dire Wolf / KISS host (default: 127.0.0.1)")
@@ -212,6 +270,8 @@ def main():
                         help=f"Max width and height in pixels (default: {DEFAULT_MAX_WIDTH} {DEFAULT_MAX_HEIGHT})")
     parser.add_argument("--dir", type=str, default=DEFAULT_AUDIO_DIR,
                         help=f"Directory for save recorded audio wav (default: {DEFAULT_AUDIO_DIR})")
+    if sys.platform == 'win32':
+        parser.add_argument("--list", action="store_true", help="Show full list of audio devices present on the system")
     parser.add_argument("--version", action='version', version=f"ssdv2sat-%(prog)s v{VERSION} by hobisatelit <https://github.com/hobisatelit>", help="Show the version of the application")
 
     args = parser.parse_args()
@@ -226,10 +286,20 @@ def main():
     FEC_SUFFIX = ''
     ssdv = True
 
+    if sys.platform == 'win32':
+        if args.list:
+            print(f"Audio Devices:\n{sd.query_devices()}")
+            sys.exit(0)
+
     formatted_time = time.strftime("%Y-%m-%dT%H-%M-%S")
     formatted_time_nosecond = time.strftime("%Y-%m-%d")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    AUDIO_DIR = os.path.join(script_dir, f"{AUDIO_DIR}/{formatted_time_nosecond}")
+
+    if sys.platform == 'win32':
+        script_dir = os.getcwd()
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    AUDIO_DIR = os.path.join(script_dir, AUDIO_DIR, formatted_time_nosecond)
     os.makedirs(AUDIO_DIR, exist_ok=True)
 
     if args.log:
@@ -242,22 +312,32 @@ def main():
         # log command
         print("Log Command: " + shlex.join(sys.argv), file=sys.stderr)
         
-    print(f"📺ssdv2sat v{VERSION}")
+    print(f"ssdv2sat v{VERSION}")
     req_error = False
 
     config = configparser.ConfigParser()
     config.read('config.ini')
-    DEFAULT_APP_SOX = config.get('app', 'sox', fallback='/usr/bin/sox')
-    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback='/usr/bin/ssdv')
     
+    DEFAULT_APP_SSDV = '/usr/bin/ssdv'
+    DEFAULT_APP_SOX = '/usr/bin/sox'
+    DEFAULT_APP_IMG2SSDV = "img2ssdv.py"
+    if sys.platform == 'win32':
+        DEFAULT_APP_SSDV = 'ssdv.exe'
+        DEFAULT_APP_SOX = 'sox.exe'
+        DEFAULT_APP_IMG2SSDV = "img2ssdv.exe" 
+
+    DEFAULT_APP_SSDV = config.get('app', 'ssdv', fallback=DEFAULT_APP_SSDV)
+    DEFAULT_APP_SOX = config.get('app', 'sox', fallback=DEFAULT_APP_SOX)
+    DEFAULT_APP_SOX_DEVICE_WIN = config.get('app', 'sox_device_win', fallback='CABLE Output')
+
     # check file requirements 
-    dep = ['config.ini', 'img2ssdv.py', DEFAULT_APP_SOX, DEFAULT_APP_SSDV]
+    dep = ['config.ini', DEFAULT_APP_IMG2SSDV, DEFAULT_APP_SOX, DEFAULT_APP_SSDV]
     for file in dep:
         if not os.path.exists(file):
-            print(f" → Cannot find {file}", file=sys.stderr)
+            print(f" + Cannot find {file}", file=sys.stderr)
             req_error = True
     if req_error: 
-        print(f" → Please check your config.ini ..")   
+        print(f" + Please check your config.ini ..")   
         sys.exit(1)
         
     
@@ -371,8 +451,8 @@ def main():
     
     output_wav = f"{basename_noext}audio_{FILE_SUFFIX}.wav"
 
-    print(f"{filetype_txt} name         : {basename}")
-    print(f"{filetype_txt}_ID           : {IMG_ID}")
+    print(f"{filetype_txt} name          : {basename}")
+    print(f"{filetype_txt}_ID            : {IMG_ID}")
     print(f"PACKET_LENGTH     : {PACKET_LENGTH} byte/frame")
     print(f"Frame delay       : {FRAME_DELAY} seconds")
     print(f"Audio output      : {output_wav}")
@@ -387,14 +467,14 @@ def main():
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(10)
         sock.connect((HOST, KISS_PORT))
-        print("SUCCESS ✓")
+        print("SUCCESS [OK]")
     except socket.timeout:
         print("\nError: Connection timed out.")
-        print("   → Is Dire Wolf running with KISSPORT 8001 enabled?")
+        print("  +  Is Dire Wolf running with KISSPORT 8001 enabled?")
         sys.exit(1)
     except ConnectionRefusedError:
         print("\nError: Connection refused.")
-        print("   → Dire Wolf not listening on port 8001.")
+        print("  +  Dire Wolf not listening on port 8001.")
         sys.exit(1)
     except Exception as e:
         print(f"\nError: Unexpected connection error: {e}")
@@ -519,7 +599,7 @@ def main():
         try:
             while True:
                     #sys.stdout.write(f"\r{frame:5d} {seconds} seconds")
-                    sys.stdout.write(f" {SPINNER[i % 20]} {(time.perf_counter() - start):.2f} seconds\r")
+                    sys.stdout.write(f" {SPINNER[i % len(SPINNER)]} {(time.perf_counter() - start):.2f} seconds\r")
                     sys.stdout.flush()
                     i += 1
                     time.sleep(0.07)
@@ -527,7 +607,7 @@ def main():
             print("\r  ")
                
         finally:
-            print(" → PLEASE WAIT! DONT PRESS ANY KEY!..")   
+            print(" + PLEASE WAIT! DONT PRESS ANY KEY!..")   
             time.sleep(3)
             stop_recording(wav_process)
             if os.path.exists(os.path.join(AUDIO_DIR, output_wav)):
