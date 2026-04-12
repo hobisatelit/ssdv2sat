@@ -91,7 +91,14 @@ edit direwolf.conf at same directory with script.
 change MODEM 1200 to MODEM 2400, or MODEM 9600. higher baudrate, faster transmission. Please adjust according to your hardware support. Handheld FM ussualy support 1200 and 2400 only.
 
 ### How to run on Windows
-Now it running on Microslop Windows. but you need to install VB-Cable first. since v0.07, you can download the standalone app for Windows. Please download on release page. 
+Now you can run it on Microslop Windows, but you need to install VB-Cable first. Since v0.07, you can download the standalone app for Windows on this page. Please check the release page. You can also build and compile it yourself using PyInstaller. Just clone the source code and run this command from your Windows command prompt (you must have Python installed first):
+```bash
+pip install pyinstaller
+pyinstaller --clean --onefile --optimize 1 rx.py
+pyinstaller --clean --onefile --optimize 1 tx.py
+pyinstaller --clean --onefile --optimize 1 img2ssdv.py
+```
+this command will create .exe app on dist/ folder. 
 
 ### Another advanced command
 ```bash
