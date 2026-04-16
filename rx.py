@@ -55,7 +55,7 @@ from io import StringIO
 import binascii
 import struct
 import shlex
-#import signal
+import signal
 
 # minimum packet from modem (in bytes) (direwolf, etc)
 MIN_APRS_LENGTH = 1
@@ -385,8 +385,20 @@ class tee:
         for f in self.files:
             f.flush()
             
-    
+def handle_sigint(signal, frame):
+    global should_exit, sock
+    print("Interrupted by user, exiting..")
+    should_exit = True
+    if sock:
+        try:
+            sock.close()
+        except:
+            pass
+        
 def main(args):
+    global should_exit, sock    
+    should_exit = False
+    signal.signal(signal.SIGINT, handle_sigint)
     output_dir = args.output_dir         
     print(f"Connecting to KISS SERVER (Dire Wolf / SoundModem) at {args.host}:{args.port} ...")
     try:
@@ -397,6 +409,8 @@ def main(args):
         print(f"Connection failed: {e}", file=sys.stderr)
         press_continue()            
         sys.exit(1)
+
+    sock.settimeout(1.0)
         
     print(f"Decode SSDV image fragments to: {output_dir}")
     print(f"Expecting min {MIN_APRS_LENGTH} bytes for APRS and {MIN_SSDV_LENGTH} bytes for SSDV")
@@ -426,16 +440,21 @@ def main(args):
 
     i = 0
     x = 0
-    while True:
+    while not should_exit:
         try:
             chunk = sock.recv(1024)
+        except socket.timeout:
+            continue
+        except Exception as e:
+            #print(f"Socket error: {e}", file=sys.stderr)
+            break
+           
+        ''' 
         except KeyboardInterrupt:
             print("\nInterrupted by user.")
             break
-        except Exception as e:
-            print(f"Socket error: {e}", file=sys.stderr)
-            break
-
+        '''
+             
         if not chunk:
             print("Server closed connection.")
             break        
